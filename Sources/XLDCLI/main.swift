@@ -349,6 +349,167 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdPipelineFull(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
+    try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    print("====================================================")
+    print(" XLD L2D — FULL PIPELINE")
+    print("====================================================")
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("image: \(url.lastPathComponent)  \(W) x \(H)  (\(W * H) px)")
+    print("")
+
+    // stage 1: GPU classify + validate + reprocess
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+    let tPipe = Date()
+    guard let pipeRes = gpu.runFullPipeline(image: img) else { print("gpu failed"); return }
+    let dtPipe = Date().timeIntervalSince(tPipe)
+    print(String(format: "[1/8] GPU pipeline        %.2f ms   pass1 err=%d  pass2 err=%d  tiles=%d",
+                 dtPipe * 1000, pipeRes.pass1Errors, pipeRes.pass2Errors, pipeRes.errorTiles))
+
+    // stage 2: layers
+    let tLayer = Date()
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
+    var flat = [UInt8](repeating: 0, count: W * H)
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
+    let flatLabeling = ConnectedComponents(minSize: 32).label(mask: flat, width: W, height: H)
+    let edgeLabeling = ConnectedComponents(minSize: 8).label(mask: edge, width: W, height: H)
+    let assignment = LayerClassifier().assign(flatLabeling: flatLabeling,
+                                              edgeLabeling: edgeLabeling,
+                                              width: W, height: H)
+    var layerMasks: [LayerID: [UInt8]] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        let src = assignment.layerSource[layer] ?? .flatComponent
+        let labeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
+        var mask = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labeling.componentID[i] == Int32(compID) {
+            mask[i] = 1
+        }
+        layerMasks[layer] = mask
+    }
+    let dtLayer = Date().timeIntervalSince(tLayer)
+    print(String(format: "[2/8] Layer separation     %.2f ms   %d layers", dtLayer * 1000, layerMasks.count))
+
+    // stage 3: occlusion
+    let tOcc = Date()
+    let occGraph = OcclusionGraphBuilder().build(layerMasks: layerMasks, width: W, height: H)
+    let dtOcc = Date().timeIntervalSince(tOcc)
+    print(String(format: "[3/8] Occlusion graph      %.2f ms   order=%@",
+                 dtOcc * 1000,
+                 occGraph.orderedLayers.map { $0.rawValue }.joined(separator: " < ") as NSString))
+
+    // stage 4: envelope
+    let tEnv = Date()
+    let envelope = MovementEnvelopeBuilder(budget: 20).build(layerMasks: layerMasks,
+                                                             width: W, height: H)
+    let dtEnv = Date().timeIntervalSince(tEnv)
+    let totalBudget = envelope.layers.values.reduce(0) { $0 + $1.disocclusionBudget }
+    print(String(format: "[4/8] Movement envelope    %.2f ms   total disocc budget=%d px",
+                 dtEnv * 1000, totalBudget))
+
+    // stage 5: lifetime simulation
+    let tSim = Date()
+    let seq = DefaultMotionSequences.vtuber()
+    let sim = MotionSimulator()
+    let lifetime = sim.simulate(sequence: seq,
+                                layerMasks: layerMasks,
+                                layerZ: occGraph.layerZ,
+                                originalTopRank: occGraph.pixelOwnerRank,
+                                orderedLayers: occGraph.orderedLayers,
+                                width: W, height: H)
+    let dtSim = Date().timeIntervalSince(tSim)
+    let lifetimePct = Float(lifetime.lifetimeCount) / Float(W * H) * 100.0
+    print(String(format: "[5/8] Lifetime simulation  %.2f ms   %d poses, disocc=%d px (%.2f%%)",
+                 dtSim * 1000, lifetime.poseResults.count, lifetime.lifetimeCount, lifetimePct))
+
+    // stage 6: minimal inpainting
+    let tInp = Date()
+    let engine = MinimalInpaintingEngine()
+    let req = InpaintRequest(width: W, height: H,
+                             disocclusionMask: lifetime.lifetimeDisocclusion,
+                             contextRGBA: img.rgba,
+                             tileSize: 16,
+                             maxPixels: W * H)
+    guard let out = engine.inpaint(request: req) else { print("inpaint failed"); return }
+    let dtInp = Date().timeIntervalSince(tInp)
+    print(String(format: "[6/8] Minimal inpainting   %.2f ms   tiles=%d  px=%d",
+                 dtInp * 1000, out.stats.tilesInpainted, out.stats.pixelsTouched))
+
+    // stage 7: write artifacts
+    let tWrite = Date()
+    let inpDir = outDir.appendingPathComponent("inpaint")
+    try? FileManager.default.createDirectory(at: inpDir, withIntermediateDirectories: true)
+    let restoredURL = inpDir.appendingPathComponent("restored.png")
+    try ImageIO.save(image: RasterImage(width: W, height: H, rgba: out.rgba), url: restoredURL)
+
+    let ltDir = outDir.appendingPathComponent("lifetime")
+    try? FileManager.default.createDirectory(at: ltDir, withIntermediateDirectories: true)
+    try LifetimeVisualizer.writeLifetime(lifetime, url: ltDir.appendingPathComponent("lifetime_disocclusion.png"))
+    try LifetimeVisualizer.writeLifetimeOverlay(lifetime, original: img,
+                                                url: ltDir.appendingPathComponent("lifetime_overlay.png"))
+
+    var compIDs: [String: Int] = [:]
+    var sizes:   [String: Int] = [:]
+    var srcMap:  [String: String] = [:]
+    var layerMasksStr: [String: [UInt8]] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        compIDs[layer.rawValue] = compID
+        sizes[layer.rawValue] = assignment.layerPixels[layer] ?? 0
+        srcMap[layer.rawValue] = assignment.layerSource[layer]?.rawValue ?? "?"
+    }
+    for (layer, mask) in layerMasks { layerMasksStr[layer.rawValue] = mask }
+
+    let doc = XLDModelDocument(
+        version: XLDKit.version,
+        imagePath: url.lastPathComponent,
+        imageWidth: W,
+        imageHeight: H,
+        layerComponentID: compIDs,
+        layerPixelCount: sizes,
+        layerSource: srcMap,
+        layerMasks: layerMasksStr,
+        occlusionGraph: occGraph,
+        movementEnvelope: envelope,
+        lifetimeDisocclusion: lifetime.lifetimeDisocclusion,
+        lifetimeSequenceName: lifetime.sequenceName,
+        lifetimePoseCount: lifetime.poseResults.count
+    )
+    let modelDir = outDir.appendingPathComponent("model.xldmodel")
+    try XLDModelIO.write(doc, to: modelDir)
+    let dtWrite = Date().timeIntervalSince(tWrite)
+    print(String(format: "[7/8] Artifact writing     %.2f ms   %@",
+                 dtWrite * 1000, modelDir.lastPathComponent as NSString))
+
+    // stage 8: report
+    let tTotal = Date().timeIntervalSince(t0)
+    print(String(format: "[8/8] Total                %.2f ms", tTotal * 1000))
+    print("")
+    print("====================================================")
+    print(" RESULT")
+    print("====================================================")
+    print(String(format: "  original preserved : %.2f%%", 100.0 - lifetimePct))
+    print(String(format: "  needs inpaint      : %.2f%%", lifetimePct))
+    print(String(format: "  layer count        : %d", layerMasks.count))
+    print(String(format: "  disocclusion px    : %d", lifetime.lifetimeCount))
+    print(String(format: "  inpaint tiles      : %d", out.stats.tilesInpainted))
+    print("")
+    print("  artifacts:")
+    print("    \(modelDir.path)/")
+    print("    \(restoredURL.path)")
+    print("    \(ltDir.path)/lifetime_overlay.png")
+    print("====================================================")
+}
+
 func cmdInpaint(_ path: String) throws {
     let url = URL(fileURLWithPath: path)
     let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
@@ -804,7 +965,10 @@ func cmdLayers(_ path: String) throws {
         layerSource: srcMap,
         layerMasks: layerMasks,
         occlusionGraph: occGraph,
-        movementEnvelope: envelope
+        movementEnvelope: envelope,
+        lifetimeDisocclusion: nil,
+        lifetimeSequenceName: nil,
+        lifetimePoseCount: 0
     )
 
     let modelDir = outDir.appendingPathComponent("model.xldmodel")
@@ -943,6 +1107,9 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "pipeline-full":
+        guard positional.count >= 2 else { usage(); exit(1) }
+        try cmdPipelineFull(positional[1])
     case "inpaint":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdInpaint(positional[1])
