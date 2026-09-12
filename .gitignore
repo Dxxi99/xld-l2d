@@ -1,0 +1,23 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+*.xcuserstate
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# AI models / large assets
+*.mlmodelc/
+*.mlpackage/
+*.safetensors
+*.ckpt
+*.pt
+*.onnx
+assets/models/
