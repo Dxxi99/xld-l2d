@@ -349,6 +349,135 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdLayers(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
+    try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("== XLD Layers ==")
+    print("image: \(W) x \(H)  (\(W * H) px)")
+
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+
+    let tGPU = Date()
+    guard let pipe = gpu.runFullPipeline(image: img) else { print("gpu failed"); return }
+    let dtGPU = Date().timeIntervalSince(tGPU)
+
+    let labels = gpu.classify(image: img) ?? []
+    guard labels.count == W * H else { print("classify failed"); return }
+
+    var flat = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) where labels[i].classID == 0 { flat[i] = 1 }
+
+    let tCC = Date()
+    let cc = ConnectedComponents(minSize: 32)
+    let labeling = cc.label(mask: flat, width: W, height: H)
+    let dtCC = Date().timeIntervalSince(tCC)
+
+    var kept = 0
+    for s in labeling.componentSizes where s >= 32 { kept += 1 }
+
+    print("")
+    print("== Connected Components ==")
+    print(String(format: "  total comps   : %d", labeling.componentCount))
+    print(String(format: "  kept (>=32px) : %d", kept))
+    print(String(format: "  cc time       : %.1f ms", dtCC * 1000))
+
+    let tLC = Date()
+    let lc = LayerClassifier()
+    let assignment = lc.assign(labeling: labeling, width: W, height: H)
+    let dtLC = Date().timeIntervalSince(tLC)
+
+    print("")
+    print("== Layer Assignment ==")
+    let ordered: [LayerID] = [.background, .hairFront, .face, .eyeL, .eyeR, .mouth]
+    for layer in ordered {
+        if let compID = assignment.layerComponent[layer] {
+            let size = assignment.layerPixels[layer] ?? 0
+            let bb = labeling.componentBBoxes[compID]
+            print(String(format: "  %-12@  comp=%-4d  size=%-6d  bbox=(%4d,%4d)-(%4d,%4d)",
+                         layer.rawValue as NSString, compID, size,
+                         bb.x0, bb.y0, bb.x1, bb.y1))
+        } else {
+            print(String(format: "  %-12@  (not found)", layer.rawValue as NSString))
+        }
+    }
+    print(String(format: "  classify time: %.1f ms", dtLC * 1000))
+
+    let visURL = outDir.appendingPathComponent("components.png")
+    try ComponentVisualizer.writeVisualization(labeling, width: W, height: H, url: visURL)
+    print("")
+    print("  visual: \(visURL.path)")
+
+    // per-layer mask 시각화
+    var layerIndex: [LayerID: UInt8] = [:]
+    var rank: UInt8 = 1
+    for layer in ordered {
+        if let compID = assignment.layerComponent[layer] {
+            layerIndex[layer] = rank
+            rank += 1
+
+            var rgba = [Float](repeating: 0, count: W * H * 4)
+            for i in 0..<(W * H) {
+                if labeling.componentID[i] == Int32(compID) {
+                    rgba[i * 4 + 0] = 1.0
+                    rgba[i * 4 + 1] = 1.0
+                    rgba[i * 4 + 2] = 1.0
+                }
+                rgba[i * 4 + 3] = 1.0
+            }
+            let mURL = outDir.appendingPathComponent("layer_\(layer.rawValue).png")
+            let rimg = RasterImage(width: W, height: H, rgba: rgba)
+            try ImageIO.save(image: rimg, url: mURL)
+            print("  wrote \(mURL.lastPathComponent)")
+        }
+    }
+
+    print("")
+    print(String(format: "  gpu pipeline: %.2f ms", dtGPU * 1000))
+    print(String(format: "  total time  : %.1f ms", Date().timeIntervalSince(t0) * 1000))
+}
+
+func cmdBenchScaling() throws {
+    print("== XLD Scaling Bench (fused, 5 kernels) ==")
+    print("size      px        cpu(ms)    gpu(ms)    speedup")
+    let sizes = [128, 256, 512, 1024, 2048]
+    let tmp = URL(fileURLWithPath: "/tmp/xld_bench_sample.png")
+
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+
+    let cpuClass = PerPixelClassifier()
+    let cpuVal   = PixelValidator()
+    let cpuIso   = ErrorIsolator()
+    let cpuRep   = ErrorReprocessor()
+
+    for sz in sizes {
+        try SampleImage.generate(to: tmp, width: sz, height: sz)
+        let img = try ImageIO.load(url: tmp)
+        let W = sz, H = sz
+
+        var t = Date()
+        let lCPU = cpuClass.classify(img)
+        let v1   = cpuVal.validate(labels: lCPU, width: W, height: H)
+        _ = cpuIso.isolate(errorMask: v1.errorMask, width: W, height: H)
+        let repCPU = cpuRep.reprocess(labels: lCPU, errorMask: v1.errorMask, width: W, height: H)
+        _ = cpuVal.validate(labels: repCPU.labels, width: W, height: H)
+        let cpuMs = Date().timeIntervalSince(t) * 1000
+
+        t = Date()
+        guard let _ = gpu.runFullPipeline(image: img) else {
+            print("gpu failed @ \(sz)"); continue
+        }
+        let gpuMs = Date().timeIntervalSince(t) * 1000
+
+        print(String(format: "%-9d %-9d %-10.1f %-10.2f %.1fx",
+                     sz, sz * sz, cpuMs, gpuMs, cpuMs / max(gpuMs, 0.001)))
+    }
+}
+
 enum SampleImage {
     static func generate(to url: URL, width: Int, height: Int) throws {
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -434,6 +563,11 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "layers":
+        guard positional.count >= 2 else { usage(); exit(1) }
+        try cmdLayers(positional[1])
+    case "bench-scaling":
+        try cmdBenchScaling()
     case "bench-gpu":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdBenchGPU(positional[1])
