@@ -1,0 +1,10 @@
+image 1856x2640
+char ok
+regions: 38
+T: 352, segments: 2324
+segments with prior: 2324
+constraints: 434
+iter: 300, viol: 1/434
+painted
+saved fusion_v3.png
+saved crops

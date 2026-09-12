@@ -42,7 +42,6 @@ public final class MetalRuntime: @unchecked Sendable {
         if (gid.x >= w || gid.y >= h) return;
         uint x = gid.x, y = gid.y;
         uint idx = y * w + x;
-
         float g = 0.0f;
         bool interior = (x > 0) && (x + 1 < w) && (y > 0) && (y + 1 < h);
         if (interior) {
@@ -54,7 +53,6 @@ public final class MetalRuntime: @unchecked Sendable {
             uint bl = ((y + 1) * w + (x - 1)) * 4;
             uint bc = ((y + 1) * w +  x     ) * 4;
             uint br = ((y + 1) * w + (x + 1)) * 4;
-
             float a = luma_of(rgba, tl);
             float b = luma_of(rgba, tc);
             float c = luma_of(rgba, tr);
@@ -63,12 +61,10 @@ public final class MetalRuntime: @unchecked Sendable {
             float f = luma_of(rgba, bl);
             float gg = luma_of(rgba, bc);
             float hh = luma_of(rgba, br);
-
             float gx = (c + 2.0f * e + hh) - (a + 2.0f * d + f);
             float gy = (f + 2.0f * gg + hh) - (a + 2.0f * b + c);
             g = sqrt(gx * gx + gy * gy);
         }
-
         uchar cid;
         float cf;
         if (g >= edgeTh) {
@@ -100,11 +96,7 @@ public final class MetalRuntime: @unchecked Sendable {
         uint idx = gid.y * w + gid.x;
         uchar c = classID[idx];
         float cf = confidence[idx];
-
-        if (cf < confThreshold) {
-            accept[idx] = 0; error[idx] = 1; return;
-        }
-
+        if (cf < confThreshold) { accept[idx] = 0; error[idx] = 1; return; }
         int disagree = 0;
         int total = 0;
         for (int dy = -1; dy <= 1; ++dy) {
@@ -120,13 +112,9 @@ public final class MetalRuntime: @unchecked Sendable {
                 total += 1;
             }
         }
-
         float ratio = total > 0 ? float(disagree) / float(total) : 0.0f;
-        if (ratio > neighborLimit) {
-            accept[idx] = 0; error[idx] = 1;
-        } else {
-            accept[idx] = 1; error[idx] = 0;
-        }
+        if (ratio > neighborLimit) { accept[idx] = 0; error[idx] = 1; }
+        else { accept[idx] = 1; error[idx] = 0; }
     }
 
     kernel void dilate3x3(
@@ -164,9 +152,7 @@ public final class MetalRuntime: @unchecked Sendable {
         uint idx = gid.y * w + gid.x;
         outClass[idx] = classID[idx];
         outConf[idx]  = confIn[idx];
-
         if (errorMask[idx] == 0) return;
-
         int votes[3] = {0, 0, 0};
         int total = 0;
         for (int dy = -radius; dy <= radius; ++dy) {
@@ -188,16 +174,18 @@ public final class MetalRuntime: @unchecked Sendable {
         outConf[idx]  = 0.80f;
     }
 
-    kernel void pose_top_rank(
-        device const uchar* masks   [[ buffer(0) ]],
-        device const int*   dxs     [[ buffer(1) ]],
-        device const int*   dys     [[ buffer(2) ]],
-        device const short* ranks   [[ buffer(3) ]],
-        device short*       outRank [[ buffer(4) ]],
-        constant uint&      w       [[ buffer(5) ]],
-        constant uint&      h       [[ buffer(6) ]],
-        constant uint&      nLayers [[ buffer(7) ]],
-        uint2 gid                   [[ thread_position_in_grid ]]
+    // pose_top_rank_at: writes top rank into outRankAll at [elemOffset + idx]
+    kernel void pose_top_rank_at(
+        device const uchar* masks     [[ buffer(0) ]],
+        device const int*   dxs       [[ buffer(1) ]],
+        device const int*   dys       [[ buffer(2) ]],
+        device const short* ranks     [[ buffer(3) ]],
+        device short*       outRankAll[[ buffer(4) ]],
+        constant uint&      w         [[ buffer(5) ]],
+        constant uint&      h         [[ buffer(6) ]],
+        constant uint&      nLayers   [[ buffer(7) ]],
+        constant uint&      elemOffset[[ buffer(8) ]],
+        uint2 gid                     [[ thread_position_in_grid ]]
     ) {
         if (gid.x >= w || gid.y >= h) return;
         uint idx = gid.y * w + gid.x;
@@ -208,35 +196,30 @@ public final class MetalRuntime: @unchecked Sendable {
             int sy = int(gid.y) - dys[i];
             if (sx < 0 || sy < 0 || sx >= int(w) || sy >= int(h)) continue;
             uint sIdx = uint(sy) * w + uint(sx);
-            uchar m = masks[i * planeSize + sIdx];
-            if (m == 1) r = ranks[i];
+            if (masks[i * planeSize + sIdx] == 1) r = ranks[i];
         }
-        outRank[idx] = r;
+        outRankAll[elemOffset + idx] = r;
     }
 
-    kernel void compare_rank(
-        device const short* orig    [[ buffer(0) ]],
-        device const short* now     [[ buffer(1) ]],
-        device uchar*       disocc  [[ buffer(2) ]],
-        constant uint&      total   [[ buffer(3) ]],
-        uint gid                    [[ thread_position_in_grid ]]
+    // compare_rank_at: reads nowAll[elemOffsetNow + gid], writes disoccAll[elemOffsetDis + gid]
+    // values: 0 = unchanged, 1 = top-changed, 2 = unmasked
+    kernel void compare_rank_at(
+        device const short* orig       [[ buffer(0) ]],
+        device const short* nowAll     [[ buffer(1) ]],
+        device uchar*       disoccAll  [[ buffer(2) ]],
+        constant uint&      total      [[ buffer(3) ]],
+        constant uint&      elemOffsetNow [[ buffer(4) ]],
+        constant uint&      elemOffsetDis [[ buffer(5) ]],
+        uint gid                       [[ thread_position_in_grid ]]
     ) {
         if (gid >= total) return;
         short o = orig[gid];
-        short n = now[gid];
-        if (o < 0) { disocc[gid] = 0; return; }
-        if (n < 0 || o != n) disocc[gid] = 1;
-        else disocc[gid] = 0;
+        short n = nowAll[elemOffsetNow + gid];
+        uint dIdx = elemOffsetDis + gid;
+        if (o < 0) { disoccAll[dIdx] = 0; return; }
+        if (n < 0) { disoccAll[dIdx] = 2; return; }
+        if (o != n) { disoccAll[dIdx] = 1; return; }
+        disoccAll[dIdx] = 0;
     }
-
-    kernel void union_mask(
-        device const uchar* src [[ buffer(0) ]],
-        device uchar*       acc [[ buffer(1) ]],
-        constant uint&      total [[ buffer(2) ]],
-        uint gid [[ thread_position_in_grid ]]
-    ) {
-        if (gid >= total) return;
-        if (src[gid] == 1) acc[gid] = 1;
-    }
+    """
 }
-

@@ -1,0 +1,19 @@
+image 1856x2640
+canny edge: 255461 (5.21%)
+skeleton  : 200921 (4.10%)
+endpoint: 3509
+line    : 196251
+T/Y     : 937
+X       : 129
+valid T with stem: 937
+after NMS: 349
+  stem E: 43
+  stem NE: 11
+  stem N: 40
+  stem NW: 41
+  stem W: 41
+  stem SW: 22
+  stem S: 88
+  stem SE: 63
+saved tj_correct.png
+saved crops

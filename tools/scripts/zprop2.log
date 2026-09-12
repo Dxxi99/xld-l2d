@@ -1,0 +1,21 @@
+image 1856x2640
+skeleton: 200921 px
+T candidates: 937
+valid T: 937
+after NMS: 352
+front total: 808  back total: 698
+on skeleton: front 1615, back 698, neutral 198608
+
+z histogram on skeleton (-1..+1):
+  -1.0:     698 
+  -0.8:       0 
+  -0.6:       0 
+  -0.4:       0 
+  -0.2:       0 
+  +0.0:  198608 ########################################
+  +0.2:       0 
+  +0.4:       0 
+  +0.6:       0 
+  +0.8:    1615 
+saved z_prop_v2.png
+saved crops

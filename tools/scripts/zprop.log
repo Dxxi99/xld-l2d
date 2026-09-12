@@ -1,0 +1,34 @@
+image 1856x2640
+edge: 293991 (6.00%)
+candidates: 66761
+raw T: 28164
+after NMS: 4456
+walking 4456 T-junctions, K=15
+votes accumulated
+  front total: 71089  back total: 1896
+  edge: front_only=55100 back_only=1262 both=633 neither=236996
+z 2/98pct: 0.0 / 2.0
+saved z_propagation.png
+saved crops
+
+z histogram:
+     -2:      1 
+     -2:      0 
+     -1:   1261 
+     -1:      0 
+     -0:      0 
+      0: 237559 ########################################
+      0:      0 
+      1:  43163 #######
+      1:      0 
+      2:      0 
+      2:   9357 #
+      2:      0 
+      3:   2135 
+      3:      0 
+      4:      0 
+      4:    410 
+      4:      0 
+      5:     96 
+      5:      0 
+      6:      9 

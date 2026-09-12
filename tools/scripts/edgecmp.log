@@ -1,0 +1,36 @@
+image 1856x2640
+
+=== Sobel 94pct ===
+  edge: 293991 px (6.00%)
+  candidates: 66761
+  raw T: 28164
+  after NMS: 4456
+
+=== Sobel + skeletonize ===
+  edge: 153870 px (3.14%)
+  candidates: 12554
+  raw T: 248
+  after NMS: 158
+
+=== Canny s=1.0 lo=.08 hi=.20 ===
+  edge: 272620 px (5.56%)
+  candidates: 32713
+  raw T: 23
+  after NMS: 11
+
+=== Canny s=1.5 ===
+  edge: 255461 px (5.21%)
+  candidates: 31137
+  raw T: 6
+  after NMS: 5
+
+=== Canny s=1.5 + skeletonize ===
+  edge: 200921 px (4.10%)
+  candidates: 20619
+  raw T: 1
+  after NMS: 1
+saved edgecmp_sobel_skel.png
+saved edgecmp_canny.png
+saved edgecmp_canny_skel.png
+
+done

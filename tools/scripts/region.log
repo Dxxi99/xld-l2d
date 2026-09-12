@@ -1,0 +1,16 @@
+image 1856x2640
+char: 57.07%
+saved rgn_pixelwise.png
+quantiles: [np.float64(30.0), np.float64(64.0), np.float64(87.0), np.float64(109.0), np.float64(137.0), np.float64(201.0)]
+regions (>=800 px): 38
+unassigned: 0.31% of char
+region depth: 0.0 .. 229.2
+saved rgn_sliced.png
+saved crops
+
+[region depth 샘플]
+  face_skin    n=140000  mean=49.0  std=41.1
+  front_hair   n= 43483  mean=77.2  std=37.2
+  body_top     n= 80000  mean=75.4  std=17.0
+  left_knee    n= 75000  mean=144.7  std=54.0
+  right_shoe   n= 89811  mean=184.6  std=43.9

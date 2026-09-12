@@ -452,6 +452,179 @@ func cmdBenchSim(_ path: String) throws {
     }
 }
 
+func cmdDiagnose(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent(
+        url.deletingPathExtension().lastPathComponent + "_diag")
+    try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    print("====================================================")
+    print(" XLD L2D — DIAGNOSE v3")
+    print("====================================================")
+
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    let total = W * H
+    print("file:  \(url.path)")
+    print("size:  \(W) x \(H)  (\(W * H) px)")
+
+    // --- [1] GPU classify + edge ---
+    guard let gpu = MetalPipeline() else { print("metal unavailable"); return }
+    let tPipe = Date()
+    guard let pipe = gpu.runFullPipeline(image: img) else {
+        print("pipeline failed"); return
+    }
+    let dtPipe = Date().timeIntervalSince(tPipe)
+    print("")
+    print("== [1] classify + validate ==")
+    print(String(format: "  pass1 errs=%d (%.2f%%)  pass2 errs=%d (%.2f%%)  time=%.1f ms",
+                 pipe.pass1Errors, Float(pipe.pass1Errors) / Float(total) * 100,
+                 pipe.pass2Errors, Float(pipe.pass2Errors) / Float(total) * 100,
+                 dtPipe * 1000))
+
+    guard let labels = gpu.classify(image: img), labels.count == total else {
+        print("classify failed"); return
+    }
+    var edge = [UInt8](repeating: 0, count: total)
+    var region = [UInt8](repeating: 0, count: total)
+    for i in 0..<total {
+        let c = labels[i].classID
+        if c == 1 { edge[i] = 1 } else { region[i] = 1 }
+    }
+
+    // --- [2] background removal ---
+    print("")
+    let tBG = Date()
+    let bgRes = BackgroundRemover(tolerance: 0.18, diagonal: true).remove(image: img)
+    let dtBG = Date().timeIntervalSince(tBG)
+    print("== [2] background removal ==")
+    print(String(format: "  bg=%.2f%%  char=%.2f%%  time=%.1f ms",
+                 Float(bgRes.backgroundCount) / Float(total) * 100,
+                 Float(bgRes.characterCount) / Float(total) * 100,
+                 dtBG * 1000))
+
+    var bgRGBA = [Float](repeating: 0, count: total * 4)
+    for i in 0..<total {
+        if bgRes.backgroundMask[i] == 1 {
+            bgRGBA[i*4] = 0.1; bgRGBA[i*4+1] = 0.1; bgRGBA[i*4+2] = 0.15
+        } else {
+            bgRGBA[i*4] = img.rgba[i*4]
+            bgRGBA[i*4+1] = img.rgba[i*4+1]
+            bgRGBA[i*4+2] = img.rgba[i*4+2]
+        }
+        bgRGBA[i*4+3] = 1.0
+    }
+    let bgURL = outDir.appendingPathComponent("background.png")
+    try ImageIO.save(image: RasterImage(width: W, height: H, rgba: bgRGBA), url: bgURL)
+
+    // --- [3] hair detection ---
+    print("")
+    let tHair = Date()
+    let hair = HairDetector(topFraction: 0.42).detect(image: img,
+                                                       characterMask: bgRes.characterMask)
+    let dtHair = Date().timeIntervalSince(tHair)
+    print("== [3] hair detection (top 42%, blue) ==")
+    if let cb = hair.charBBox {
+        print(String(format: "  char bbox : (%4d,%4d)-(%4d,%4d)  %dx%d",
+                     cb.0, cb.1, cb.2, cb.3, cb.2 - cb.0 + 1, cb.3 - cb.1 + 1))
+    }
+    print(String(format: "  hair px: %d (%.2f%%)  time=%.1f ms",
+                 hair.hairCount, Float(hair.hairCount) / Float(total) * 100,
+                 dtHair * 1000))
+    if let hb = hair.bbox {
+        print(String(format: "  hair bbox: (%4d,%4d)-(%4d,%4d)  %dx%d",
+                     hb.x0, hb.y0, hb.x1, hb.y1,
+                     hb.x1 - hb.x0 + 1, hb.y1 - hb.y0 + 1))
+    }
+
+    var hairRGBA = [Float](repeating: 0, count: total * 4)
+    for i in 0..<total {
+        if hair.hairMask[i] == 1 {
+            hairRGBA[i*4] = 0.2; hairRGBA[i*4+1] = 0.6; hairRGBA[i*4+2] = 1.0
+        } else if bgRes.characterMask[i] == 1 {
+            hairRGBA[i*4] = 0.3; hairRGBA[i*4+1] = 0.3; hairRGBA[i*4+2] = 0.3
+        }
+        hairRGBA[i*4+3] = 1.0
+    }
+    let hairURL = outDir.appendingPathComponent("hair.png")
+    try ImageIO.save(image: RasterImage(width: W, height: H, rgba: hairRGBA), url: hairURL)
+
+    // --- [4] face finder v4 (hair-enclosed) ---
+    print("")
+    let tF4 = Date()
+    let faceRes = FaceFinderV4(hairDilation: 24, minFacePx: 2000,
+                               maxFacePct: 0.06, topFraction: 0.55)
+        .find(image: img, characterMask: bgRes.characterMask,
+              hairMask: hair.hairMask, edgeMask: edge)
+    let dtF4 = Date().timeIntervalSince(tF4)
+    print("== [4] face finder v4 (hair-enclosed region) ==")
+    print(String(format: "  hair dilated px: %d", faceRes.hairDilatedCount))
+    print(String(format: "  enclosed px: %d  time=%.1f ms",
+                 faceRes.enclosedCount, dtF4 * 1000))
+    if let f = faceRes.faceBox {
+        print(String(format: "  face bbox: (%4d,%4d)-(%4d,%4d)  %dx%d  score=%.1f",
+                     f.x0, f.y0, f.x1, f.y1,
+                     f.x1 - f.x0 + 1, f.y1 - f.y0 + 1, faceRes.score))
+    } else {
+        print("  *** face not found ***")
+    }
+
+    // face_v3 visualization
+    var faceRGBA = [Float](repeating: 0, count: total * 4)
+    for i in 0..<total {
+        if faceRes.faceMask[i] == 1 {
+            faceRGBA[i*4] = 1.0; faceRGBA[i*4+1] = 0.85; faceRGBA[i*4+2] = 0.65
+        } else if hair.hairMask[i] == 1 {
+            faceRGBA[i*4] = 0.20; faceRGBA[i*4+1] = 0.55; faceRGBA[i*4+2] = 1.0
+        } else if bgRes.characterMask[i] == 1 {
+            faceRGBA[i*4] = 0.30; faceRGBA[i*4+1] = 0.30; faceRGBA[i*4+2] = 0.30
+        } else {
+            faceRGBA[i*4] = 0.05; faceRGBA[i*4+1] = 0.05; faceRGBA[i*4+2] = 0.05
+        }
+        faceRGBA[i*4+3] = 1.0
+    }
+    let faceV3URL = outDir.appendingPathComponent("face_v3.png")
+    try ImageIO.save(image: RasterImage(width: W, height: H, rgba: faceRGBA), url: faceV3URL)
+
+    // face box + border
+    if let f = faceRes.faceBox {
+        var ov = img.rgba
+        for y in 0..<H {
+            for x in 0..<W {
+                let inX = x >= f.x0 && x <= f.x1
+                let inY = y >= f.y0 && y <= f.y1
+                if inX && inY {
+                    let i = (y * W + x) * 4
+                    let isBorder = (x == f.x0 || x == f.x1 || y == f.y0 || y == f.y1)
+                    if isBorder {
+                        ov[i] = 1.0; ov[i+1] = 0.0; ov[i+2] = 1.0
+                    } else {
+                        ov[i] = ov[i] * 0.6 + 0.4
+                        ov[i+1] = ov[i+1] * 0.6
+                        ov[i+2] = ov[i+2] * 0.6
+                    }
+                }
+            }
+        }
+        let fbURL = outDir.appendingPathComponent("facebox.png")
+        try ImageIO.save(image: RasterImage(width: W, height: H, rgba: ov), url: fbURL)
+    }
+
+    print("")
+    print("== artifacts ==")
+    print("  \(bgURL.path)")
+    print("  \(hairURL.path)")
+    print("  \(faceV3URL.path)")
+    if let f = faceRes.faceBox {
+        _ = f
+        print("  \(outDir.appendingPathComponent("facebox.png").path)")
+    }
+    print("")
+    print(String(format: "  total: %.1f ms", Date().timeIntervalSince(t0) * 1000))
+    print("====================================================")
+}
+
 func cmdPipelineFull(_ path: String) throws {
     let url = URL(fileURLWithPath: path)
     let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
@@ -1125,6 +1298,98 @@ func cmdBenchScaling() throws {
     }
 }
 
+func cmdDepth(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent(
+        url.deletingPathExtension().lastPathComponent + "_depth")
+    try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+    print("== XLD Depth Diagnostic ==")
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("image: \(url.lastPathComponent)  \(W) x \(H)")
+
+    let providers: [DepthEstimator] = [
+        DepthStubProvider(),
+        DepthAnythingV2Provider(),
+    ]
+
+    var any = false
+    for pr in providers {
+        print("")
+        print("provider: \(pr.name) (\(pr.version))")
+        let t0 = Date()
+        guard let d = pr.estimate(image: img) else {
+            print("  result: nil (unavailable)")
+            continue
+        }
+        let dt = Date().timeIntervalSince(t0)
+        any = true
+
+        var dmin: UInt8 = 255, dmax: UInt8 = 0
+        var dsum: UInt64 = 0
+        var csum: UInt64 = 0
+        for i in 0..<(W * H) {
+            let v = d.depth[i]
+            if v < dmin { dmin = v }
+            if v > dmax { dmax = v }
+            dsum += UInt64(v)
+            csum += UInt64(d.confidence[i])
+        }
+        let dmean = Double(dsum) / Double(W * H)
+        let cmean = Double(csum) / Double(W * H)
+        print(String(format: "  depth: min=%d max=%d mean=%.1f", dmin, dmax, dmean))
+        print(String(format: "  confidence mean=%.1f", cmean))
+        print(String(format: "  time: %.1f ms", dt * 1000))
+
+        let slug = pr.name.lowercased()
+        let depthURL = outDir.appendingPathComponent("depth_\(slug).png")
+        let colorURL = outDir.appendingPathComponent("depth_color_\(slug).png")
+        let confURL  = outDir.appendingPathComponent("depth_confidence_\(slug).png")
+        try DepthVisualizer.writeDepth(d, url: depthURL)
+        try DepthVisualizer.writeDepthColor(d, url: colorURL)
+        try DepthVisualizer.writeConfidence(d, url: confURL)
+        print("  \(depthURL.path)")
+        print("  \(colorURL.path)")
+    }
+
+    // offline structural depth (edge density based)
+    if let gpu = MetalPipeline(),
+       let labels = gpu.classify(image: img), labels.count == W * H {
+        var edge = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labels[i].classID == 1 { edge[i] = 1 }
+        let bg = BackgroundRemover().remove(image: img)
+        let t = Date()
+        let sd = StructuralDepthEstimator()
+            .estimate(image: img, edgeMask: edge, characterMask: bg.characterMask)
+        let dt = Date().timeIntervalSince(t)
+        any = true
+        print("")
+        print("provider: \(sd.providerName) (\(sd.providerVersion))")
+        var dmin: UInt8 = 255, dmax: UInt8 = 0
+        var dsum: UInt64 = 0
+        for v in sd.depth {
+            if v < dmin { dmin = v }
+            if v > dmax { dmax = v }
+            dsum += UInt64(v)
+        }
+        print(String(format: "  depth: min=%d max=%d mean=%.1f", dmin, dmax,
+                     Double(dsum) / Double(W * H)))
+        print(String(format: "  time: %.1f ms", dt * 1000))
+        let dURL = outDir.appendingPathComponent("depth_structuraldensity.png")
+        let cURL = outDir.appendingPathComponent("depth_color_structuraldensity.png")
+        try DepthVisualizer.writeDepth(sd, url: dURL)
+        try DepthVisualizer.writeDepthColor(sd, url: cURL)
+        print("  \(dURL.path)")
+        print("  \(cURL.path)")
+    }
+
+    if !any {
+        print("")
+        print("no depth provider produced output.")
+    }
+}
+
 enum SampleImage {
     static func generate(to url: URL, width: Int, height: Int) throws {
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -1189,53 +1454,65 @@ if mode == "auto" {
     mode = (MetalRuntime.shared != nil) ? "gpu" : "cpu"
 }
 
+
 do {
-    switch positional.first {
+    switch args.first {
     case "version", "--version", "-v":
         cmdVersion()
     case "pipeline":
         cmdPipeline()
     case "make-sample":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdMakeSample(positional[1])
-    case "run":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdRun(positional[1], mode: mode)
-    case "bench":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdBench(positional[1])
-    case "fused":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdFused(positional[1])
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdMakeSample(args[1])
     case "make-sample-big":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdMakeSampleBig(positional[1])
-    case "bench-sim":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdBenchSim(positional[1])
-    case "pipeline-full":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdPipelineFull(positional[1])
-    case "inpaint":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdInpaint(positional[1])
-    case "simulate":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdSimulate(positional[1])
-    case "move":
-        guard positional.count >= 5 else { usage(); exit(1) }
-        guard let dx = Int(positional[3]), let dy = Int(positional[4]) else {
-            usage(); exit(1)
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdMakeSampleBig(args[1])
+    case "run":
+        guard args.count >= 2 else { usage(); exit(1) }
+        var mode = "auto"
+        var pathArg: String? = nil
+        for a in args.dropFirst() {
+            if a == "--gpu" { mode = "gpu" }
+            else if a == "--cpu" { mode = "cpu" }
+            else if a == "--auto" { mode = "auto" }
+            else if pathArg == nil { pathArg = a }
         }
-        try cmdMove(positional[1], layer: positional[2], dx: dx, dy: dy)
-    case "layers":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdLayers(positional[1])
+        guard let p = pathArg else { usage(); exit(1) }
+        if mode == "auto" { mode = (MetalRuntime.shared != nil) ? "gpu" : "cpu" }
+        try cmdRun(p, mode: mode)
+    case "bench":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdBench(args[1])
+    case "bench-gpu":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdBenchGPU(args[1])
+    case "bench-sim":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdBenchSim(args[1])
     case "bench-scaling":
         try cmdBenchScaling()
-    case "bench-gpu":
-        guard positional.count >= 2 else { usage(); exit(1) }
-        try cmdBenchGPU(positional[1])
+    case "layers":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdLayers(args[1])
+    case "move":
+        guard args.count >= 5 else { usage(); exit(1) }
+        guard let dx = Int(args[3]), let dy = Int(args[4]) else { usage(); exit(1) }
+        try cmdMove(args[1], layer: args[2], dx: dx, dy: dy)
+    case "simulate":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdSimulate(args[1])
+    case "inpaint":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdInpaint(args[1])
+    case "pipeline-full":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdPipelineFull(args[1])
+    case "diagnose":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdDiagnose(args[1])
+    case "depth":
+        guard args.count >= 2 else { usage(); exit(1) }
+        try cmdDepth(args[1])
     default:
         usage()
     }

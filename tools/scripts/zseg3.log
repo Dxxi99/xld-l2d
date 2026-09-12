@@ -1,0 +1,14 @@
+skeleton: 200921 px
+T after NMS: 352
+segments: 2324
+T valid: 217
+z_seg: min=0 max=4
+z level distribution (top 10):
+  z= 0: 1947 segments
+  z= 1: 316 segments
+  z= 2: 52 segments
+  z= 3: 8 segments
+  z= 4: 1 segments
+  ... total levels: 5
+coverage: 198465 px painted
+saved z_segment_v3*.png

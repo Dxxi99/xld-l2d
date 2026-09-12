@@ -1,0 +1,291 @@
+# XLD-L2D 세션 보고서 — 2026-09-12 (3부)
+
+**작성일**: 2026-09-12 (토) 밤
+**작성자**: Claude (assistant) with 박성민
+**목적**: 새 세션 인수인계용 상세 문서. 이 문서만 읽으면 오늘 한 모든 것 + 다음에 할 것을 재현 가능하게.
+
+---
+
+## 0. 프로젝트 정체성 (재확인)
+
+**XLD-L2D** — macOS 네이티브 2D/2.5D VTuber 모델러
+
+> **"완성된 일러스트 한 장 → 자동으로 VTuber 모델로 변환"**
+
+**최상위 철학**:
+> "가능한 가장 작은 단위로 정확하게 이해하고, 필요한 것만 계산하며, 원본은 최대한 보존하고, AI의 오류는 최소 영역에 격리한다."
+
+**사용자가 아닌 것**:
+- Live2D Cubism (수동 리깅)
+- VTube Studio (얼굴추적 런타임)
+- 데모 프로그램
+
+---
+
+## 1. 세션 시작 시점 상태 (2026-09-12 3부 시작)
+
+### 완성 (이전 세션)
+- Core 계층, IO 계층, GPU 파이프라인 (810배)
+- Connected Components (PyramidCC 40배)
+- Depth Anything V2 CoreML (F16P8, 82ms)
+- T-junction 검출 (skeleton + 3×3 이웃, 919→NMS 343)
+- Canonical Fusion (viol=0/217, scc=2530)
+- Layer 승격 (7 layers, L0~L6)
+- Mesh (232,996 verts, 464,154 tris)
+- Swift CanonicalFusion.swift + LayerPromotion.swift (테스트 통과)
+- Swift RuntimeRig.swift (B1, max diff 3.8e-06)
+
+### 이슈
+- Rig v3: **846,255 flips** (찢어짐, "데모엔 문제없음" 잘못 판단)
+
+---
+
+## 2. 오늘 세션에서 한 일 (시간순)
+
+### Phase 1: 찢어짐 정량 진단 (T1)
+- \`diag_rig_v3.py\` 작성: flip grid, weld check, basis smoothness
+- **결정적 발견**: edge mean = **4.11px** (예상 6.5px보다 훨씬 촘촘)
+- v3는 yaw=±10°에서 30k+ flips → "약간 남음"이 아니라 **근본적으로 깨진 상태**
+
+### Phase 2: 접근법 탐색 (v4~v7, 모두 실패)
+- **v4 Laplacian solve** (λ=10/100/1000): 846k → 57k로 줄지만 basis range 붕괴
+- **v5 depth-based basis**: 방향 맞지만 depth edge가 계단 → 262k
+- **v6 image-space Gaussian** (σ=30/50/80): 41k → 17k, 느리게 감소
+- **v7 Jacobi projection**: 버그 (오버슈트) + 근본적 한계
+
+**수학적 결론**: "부드럽게 만들기" 접근의 한계. 계단을 ramp로 바꾸는 건 flip을 0으로 못 만듦.
+
+### Phase 3: 성공 (v8 ~ v12)
+
+**v8 (509 flips)**: σ=120 Gaussian + mesh Laplacian solve (λ=20) + Gauss-Seidel 투영
+- BUDGET=0.5, R_X=100, R_Y=60
+- Jacobi 오버슈트 방지 위해 평균나누기
+
+**v9~v10 실패**: EPS 마스크 문제, per-edge 제약이 triangle flip 보장 못 함
+
+**v11 (36 flips)**: triangle-level clamp 도입, BUDGET=0.20
+
+**v12 (flip=0)**: bad-triangle 국소 Laplacian smoothing
+- ALPHA=0.15, iter 20 수렴
+- **모든 (yaw, pitch) 그리드에서 0 flips**
+
+\`\`\`
+[v12 결과]
+[converged] iter 20
+[end] total flips = 0
+[basis_x] range=1.7711
+[basis_y] range=1.8931
+\`\`\`
+
+### Phase 4: Swift 포팅
+
+**B1 RuntimeRig.swift**: basis_x/y → offsets(yaw, pitch)
+- Python vs Swift max diff 3.8e-06
+- 성능 30ms (배열 할당 포함)
+
+**B1.5 Model 계층**:
+- \`XLDMesh.swift\`: vertices + triangles
+- \`XLDRuntimeModel.swift\`: mesh + rig + source image
+- \`XLDRuntimeModelIO.swift\`: bin reader
+- **주의**: \`IO/XLDModel.swift\` (기존 문서 struct) 와 이름 충돌 → Model/에 새 struct는 \`XLDRuntimeModel\`로 명명
+
+### Phase 5: SwiftUI 앱 + Metal 렌더러
+
+**XLDApp 타겟 추가** (Package.swift):
+- RigState.swift (ObservableObject)
+- ContentView.swift (좌우 분할)
+- RigCanvasView.swift → MetalRigView로 교체
+- **Metal/MetalRigView.swift** (NSViewRepresentable)
+- **Metal/RigRenderer.swift** (MTKViewDelegate)
+- **Metal/ShaderSource.swift** (런타임 컴파일용 shader 문자열)
+
+**Metal 파이프라인**:
+- Vertex: position(2) + basis(2) + uv(2)
+- Uniforms: viewport, image_size, offset(sx,sy), scale
+- Fragment: texture sample + alpha 처리
+
+**Shader 문제 → 해결**:
+- SwiftPM이 .metal 자동 컴파일 안 함
+- → 런타임 소스 컴파일 (\`device.makeLibrary(source:)\`)로 전환
+
+**Alpha 문제 → 해결**:
+- 원본 \`my_vtuber.png\`는 **흰 배경 불투명 PNG** (alpha 전부 255)
+- Flood fill로 배경 alpha=0 처리
+- \`\`\`
+  [white] 2.4M px (49%)
+  [cc] 2222 components
+  [border] 1 label (테두리와 연결된 진짜 배경)
+  [bg] 2.1M px (42.9%)
+  → alpha=0: 2.1M, alpha=255: 2.8M
+  \`\`\`
+- **눈 하이라이트 살아남** (캐릭터 내부 흰색은 flood fill이 못 닿음)
+
+---
+
+## 3. 확정된 값 (재현용)
+
+\`\`\`
+Depth Anything V2: F16P8, 24.8MB, 82ms, 518×392
+T-junction: candidates=919, after NMS=343
+Canonical Fusion: constraints=217 (distinct), scc=2530, viol=0/217
+Layers: 7 (L0~L6), 각 ~400k px
+Mesh: 232,996 verts, 464,154 tris
+Rig v12 config:
+  SIGMA=120, LAMBDA=20, R_X=100, R_Y=60, BUDGET=0.20, ALPHA=0.15
+  basis_x range 1.77, basis_y range 1.89
+  flip grid: all 0
+RuntimeRig: max diff 3.8e-06, 30ms
+Metal: 60fps, 1856×2640 texture, alpha<0.5 discard
+\`\`\`
+
+---
+
+## 4. 확정된 파일 구조 (신규)
+
+\`\`\`
+Sources/
+├── XLDKit/
+│   ├── Fusion/
+│   │   ├── CanonicalFusion.swift       (이전 세션)
+│   │   └── LayerPromotion.swift        (이전 세션)
+│   ├── Rig/
+│   │   └── RuntimeRig.swift            ✓ 신규 (B1)
+│   ├── Model/
+│   │   ├── XLDMesh.swift               ✓ 신규
+│   │   ├── XLDRuntimeModel.swift       ✓ 신규
+│   │   └── XLDRuntimeModelIO.swift     ✓ 신규
+│   └── IO/
+│       ├── XLDModel.swift              (기존, layer 문서 struct)
+│       └── XLDModelIO.swift            (기존, .xldm writer)
+├── XLDCLI/                             (기존)
+└── XLDApp/                             ✓ 신규 (SwiftUI 앱)
+    ├── XLDApp.swift                    @main
+    ├── RigState.swift                  ObservableObject
+    ├── ContentView.swift               좌우 분할 레이아웃
+    ├── RigCanvasView.swift             (deprecated, CG 래스터)
+    └── Metal/
+        ├── MetalRigView.swift          NSViewRepresentable + MTKView
+        ├── RigRenderer.swift           MTKViewDelegate + pipeline
+        ├── ShaderSource.swift          shader 문자열 (런타임 컴파일)
+        └── RigShaders.metal            (참고용, 미사용)
+
+Tests/XLDKitTests/
+├── RuntimeRigTests.swift               ✓ 신규
+├── CanonicalFusionTests.swift          (이전)
+└── LayerPromotionTests.swift           (이전)
+
+assets/real/
+├── swift_cache/
+│   ├── rig_v12/                        (B1 검증용)
+│   │   ├── basis_x.bin, basis_y.bin, meta.txt
+│   │   └── expected_off_*.bin
+│   └── model_v1/                       (앱 로드용)
+│       ├── vertices_xy.bin, triangles.bin
+│       ├── basis_x.bin, basis_y.bin, meta.txt
+│       └── source.png                  ← 흰 배경 alpha=0 처리됨
+└── mesh/
+    ├── rig_v12_flipfree.npz            ★ flip-free rig
+    ├── rig_v12_basis.png
+    └── deform_rig_v12.png
+
+tools/scripts/
+├── mesh_rig_v12.py                     ★ flip-free 최종
+├── diag_rig_v3.py                      (진단)
+├── cache_rig_for_swift.py              (B1용)
+├── cache_model_for_swift.py            (앱용)
+└── render_rig_v12.py                   (PNG 렌더)
+\`\`\`
+
+---
+
+## 5. 실패한 접근 (재시도 금지)
+
+### Rig 관련
+- ❌ Laplacian **smoothing** for rig basis (v3, 30 iter)
+- ❌ Laplacian **solve** λ=1000 (basis range 붕괴)
+- ❌ Depth 기반 Gaussian만 (v5, depth edge 계단)
+- ❌ Jacobi projection (v7, 오버슈트)
+- ❌ per-edge 제약만 (triangle flip 못 잡음)
+- ❌ blend 0.5 (v10)
+- ❌ EPS 마스크 없이 수치 위반 처리 (v9)
+
+### Shader/렌더 관련
+- ❌ SwiftUI Canvas로 464k tri 렌더 (느림)
+- ❌ `ctx.setShouldAntialias(false)` + expansion 1.08 (seam 남음)
+- ❌ 흰색 픽셀 무조건 discard (눈 하이라이트 손실)
+- ❌ CG 래스터 per-tri color (화질 저하)
+
+### 빌드 관련
+- ❌ SwiftPM resources로 .metal 자동 컴파일 기대 → **런타임 소스 컴파일로**
+- ❌ \`cat << 'EOF'\` heredoc zsh에서 깨짐 → **\`python3 << 'PYEOF'\` + write_text** 사용
+
+---
+
+## 6. 다음 작업 (우선순위)
+
+| # | 작업 | 예상 | 난이도 |
+|---|---|---|---|
+| **T3** | B2: MeshBuilder Swift 포팅 (contour + Delaunay) | 2시간 | 중 |
+| **T4** | B3: TJunctionDetector (Canny + Zhang-Suen) | 3시간+ | **높음** |
+| **T5** | 다른 이미지 로드 (파이프라인 자동화, CLI \`xld build\`) | 1시간 | 중 |
+| **T6** | Export (.xldm 저장/불러오기) | 1시간 | 중 |
+| **T7** | FPS 표시 + 성능 최적화 (in-place offsets) | 30분 | 낮음 |
+| **T8** | Layer 기반 렌더 (Live2D 방식, 대안) | 30분 | 낮음 |
+| **T9** | Physics (hair/cloth) | 수일 | 높음 |
+| **T10** | 2.5D (parallax + perspective) | 수일 | 높음 |
+
+---
+
+## 7. 세션 마무리 시점 상태
+
+\`\`\`
+[파이프라인]  Python에서 완성: depth → T-junc → fusion → layer → mesh → rig
+[앱]        Swift Metal 렌더러 60fps 동작
+            슬라이더 yaw/pitch 반응
+            텍스처 매핑 + alpha 처리
+[미완]      Swift에 파이프라인 전부 포팅 (B2, B3)
+            임의 이미지 로드
+            Export
+            Physics, 2.5D
+\`\`\`
+
+**첫 시각적 결과물 완성**: 일러스트 → VTuber 모델 (flip-free rig) → 실시간 프리뷰.
+
+---
+
+## 8. 다음 세션 시작 시 확인 사항
+
+1. **파일 존재 확인**:
+   \`\`\`bash
+   ls ~/XLD-L2D/Sources/XLDApp/Metal/
+   ls ~/XLD-L2D/Sources/XLDKit/Model/
+   ls ~/XLD-L2D/assets/real/swift_cache/model_v1/
+   \`\`\`
+
+2. **테스트 재실행**:
+   \`\`\`bash
+   cd ~/XLD-L2D && swift test --filter "RuntimeRigTests" 2>&1 | tail -10
+   \`\`\`
+
+3. **앱 재실행 확인**:
+   \`\`\`bash
+   cd ~/XLD-L2D && swift run XLDApp
+   \`\`\`
+
+4. **다음 작업**: **T3 (B2 MeshBuilder)** 또는 **T5 (다른 이미지 로드)** 부터.
+
+---
+
+## 9. 오늘 얻은 핵심 교훈
+
+1. **"부드럽게 만들기" ≠ flip 제거** — 계단을 ramp로 바꾸는 건 한계. **국소 직접 clamp**가 정답.
+2. **edge mean 4.11px**이 근본 문제 — 허용 basis diff = edge_len / sx_max.
+3. **bad-triangle 국소 smoothing** (v12) — α=0.15, iter 20 수렴. 수학적으로 확실.
+4. **SwiftPM .metal 자동 컴파일 안 됨** — 런타임 소스 컴파일 (\`makeLibrary(source:)\`).
+5. **흰 배경 alpha 처리** — flood fill (테두리 연결 컴포넌트만 배경). 눈 하이라이트 보존.
+6. **zsh heredoc + 괄호 → parse error** — \`python3 << 'PYEOF'\` + \`Path.write_text\`로 우회.
+7. **파일 이름 충돌** (IO/XLDModel vs Model/XLDModel) → 기존 유지, 새 struct는 \`XLDRuntimeModel\`로.
+
+---
+
+**세션 종료. 다음 세션 시작 시 "T3 B2 MeshBuilder" 또는 "T5 다른 이미지 로드" 부터.**

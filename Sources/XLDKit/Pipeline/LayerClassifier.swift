@@ -10,6 +10,7 @@ public struct LayerAssignment: Sendable {
 public enum LayerSourceKind: String, Sendable {
     case flatComponent
     case edgeComponent
+    case regionComponent
 }
 
 public final class LayerClassifier: @unchecked Sendable {
@@ -18,8 +19,17 @@ public final class LayerClassifier: @unchecked Sendable {
     public func assign(flatLabeling: ComponentLabeling,
                        edgeLabeling: ComponentLabeling?,
                        width: Int, height: Int) -> LayerAssignment {
+        return assign(regionLabeling: flatLabeling,
+                      edgeLabeling: edgeLabeling,
+                      width: width, height: height)
+    }
+
+    public func assign(regionLabeling: ComponentLabeling,
+                       edgeLabeling: ComponentLabeling?,
+                       width: Int, height: Int) -> LayerAssignment {
         let totalPx = width * height
-        let n = flatLabeling.componentSizes.count
+        let n = regionLabeling.componentSizes.count
+        let Wf = Float(width), Hf = Float(height)
 
         var layerOf: [LayerID?] = Array(repeating: nil, count: n)
         var layerComp: [LayerID: Int] = [:]
@@ -49,27 +59,30 @@ public final class LayerClassifier: @unchecked Sendable {
             return out
         }
 
-        let flatCands = candList(flatLabeling)
+        let regionCands = candList(regionLabeling)
 
-        // background
-        if let bg = flatCands.first(where: { c in
-            let bb = flatLabeling.componentBBoxes[c.id]
-            return bb.x0 <= 2 && bb.y0 <= 2 && bb.x1 >= width - 3 && bb.y1 >= height - 3
+        // --- background ---
+        // touches all 4 edges
+        if let bg = regionCands.first(where: { c in
+            let bb = regionLabeling.componentBBoxes[c.id]
+            return bb.x0 <= 3 && bb.y0 <= 3
+                && bb.x1 >= width - 4 && bb.y1 >= height - 4
         }) {
             layerOf[bg.id] = .background
             layerComp[.background] = bg.id
             layerPx[.background] = bg.size
-            layerSrc[.background] = .flatComponent
+            layerSrc[.background] = .regionComponent
         }
 
-        // face
-        let faceCand = flatCands
+        // --- face ---
+        // relaxed: /100 size, wide aspect, loose centroid
+        let faceCand = regionCands
             .filter { c in
                 c.id != layerComp[.background] &&
-                c.size > totalPx / 20 &&
-                c.aspect > 0.5 && c.aspect < 1.6 &&
-                abs(c.cx - Float(width) / 2)  < Float(width) * 0.20 &&
-                abs(c.cy - Float(height) / 2) < Float(height) * 0.25
+                c.size > totalPx / 100 &&
+                c.aspect > 0.4 && c.aspect < 2.5 &&
+                abs(c.cx - Wf / 2) < Wf * 0.30 &&
+                abs(c.cy - Hf / 2) < Hf * 0.35
             }
             .max(by: { $0.size < $1.size })
 
@@ -77,70 +90,67 @@ public final class LayerClassifier: @unchecked Sendable {
             layerOf[f.id] = .face
             layerComp[.face] = f.id
             layerPx[.face] = f.size
-            layerSrc[.face] = .flatComponent
+            layerSrc[.face] = .regionComponent
         }
 
-        // hair_front
+        // --- hair_front ---
         if let face = faceCand {
-            let faceBB = flatLabeling.componentBBoxes[face.id]
-            let hairCand = flatCands
+            let faceBB = regionLabeling.componentBBoxes[face.id]
+            let hairCand = regionCands
                 .filter { c in
                     c.id != layerComp[.background] && c.id != face.id &&
-                    c.size > totalPx / 40 &&
-                    flatLabeling.componentBBoxes[c.id].y0 < faceBB.y0 + 20
+                    c.size > totalPx / 200 &&
+                    regionLabeling.componentBBoxes[c.id].y0 <= faceBB.y0 + 60
                 }
                 .max(by: { $0.size < $1.size })
             if let h = hairCand {
                 layerOf[h.id] = .hairFront
                 layerComp[.hairFront] = h.id
                 layerPx[.hairFront] = h.size
-                layerSrc[.hairFront] = .flatComponent
+                layerSrc[.hairFront] = .regionComponent
             }
         }
 
-        // eyes from flat components
-        if let face = faceCand {
-            let faceBB = flatLabeling.componentBBoxes[face.id]
-            let innerSmall = flatCands.filter { c in
-                layerOf[c.id] == nil &&
-                c.size >= 30 && c.size <= totalPx / 200 &&
-                c.cx > Float(faceBB.x0) && c.cx < Float(faceBB.x1) &&
-                c.cy > Float(faceBB.y0) && c.cy < Float(faceBB.y1)
-            }
-            let faceMidY = Float(faceBB.y0 + faceBB.y1) / 2
-            let upper = innerSmall.filter { $0.cy < faceMidY }.sorted { $0.cx < $1.cx }
-            if upper.count >= 2 {
-                layerOf[upper[0].id] = .eyeL
-                layerOf[upper[1].id] = .eyeR
-                layerComp[.eyeL] = upper[0].id
-                layerComp[.eyeR] = upper[1].id
-                layerPx[.eyeL] = upper[0].size
-                layerPx[.eyeR] = upper[1].size
-                layerSrc[.eyeL] = .flatComponent
-                layerSrc[.eyeR] = .flatComponent
-            }
-        }
-
-        // mouth from edge components
+        // --- eyes: from edge components inside face bbox ---
         if let face = faceCand, let edge = edgeLabeling {
-            let faceBB = flatLabeling.componentBBoxes[face.id]
+            let faceBB = regionLabeling.componentBBoxes[face.id]
             let faceMidY = Float(faceBB.y0 + faceBB.y1) / 2
-            let faceCx   = Float(faceBB.x0 + faceBB.x1) / 2
+            let faceW = Float(faceBB.x1 - faceBB.x0)
+            let faceH = Float(faceBB.y1 - faceBB.y0)
 
             let edgeCands = candList(edge)
 
-            let mouthCandidates = edgeCands.filter { c in
-                let bb = edge.componentBBoxes[c.id]
-                let insideFaceX = bb.x0 >= faceBB.x0 && bb.x1 <= faceBB.x1
-                let insideFaceY = bb.y0 >= faceBB.y0 && bb.y1 <= faceBB.y1
-                let inLowerHalf = c.cy > faceMidY
-                let wide = c.aspect > 1.5
-                let centered = abs(c.cx - faceCx) < Float(faceBB.x1 - faceBB.x0) * 0.25
-                let sizeOK = c.size >= 20 && c.size <= totalPx / 100
-                return insideFaceX && insideFaceY && inLowerHalf && wide && centered && sizeOK
+            let eyeCands = edgeCands.filter { c in
+                c.size >= 40 &&
+                c.size <= totalPx / 400 &&
+                c.cy < faceMidY && c.cy > Float(faceBB.y0) &&
+                c.cx > Float(faceBB.x0) && c.cx < Float(faceBB.x1) &&
+                c.aspect > 0.8 && c.aspect < 3.0 &&
+                Float(c.bw) < faceW * 0.5 && Float(c.bh) < faceH * 0.35
+            }
+            let upperSortedByX = eyeCands.sorted { $0.cx < $1.cx }
+            if upperSortedByX.count >= 2 {
+                let left  = upperSortedByX.first!
+                let right = upperSortedByX.last!
+                layerComp[.eyeL] = left.id
+                layerComp[.eyeR] = right.id
+                layerPx[.eyeL] = left.size
+                layerPx[.eyeR] = right.size
+                layerSrc[.eyeL] = .edgeComponent
+                layerSrc[.eyeR] = .edgeComponent
             }
 
-            if let m = mouthCandidates.max(by: { $0.size < $1.size }) {
+            // --- mouth: wide edge component in lower face ---
+            let faceCx = Float(faceBB.x0 + faceBB.x1) / 2
+            let mouthCands = edgeCands.filter { c in
+                c.size >= 15 &&
+                c.size <= totalPx / 400 &&
+                c.cy > faceMidY && c.cy < Float(faceBB.y1) &&
+                abs(c.cx - faceCx) < faceW * 0.3 &&
+                c.aspect > 1.2 &&
+                Float(c.bh) < faceH * 0.20
+            }
+            if let m = mouthCands.max(by: { $0.size < $1.size }) {
                 layerComp[.mouth] = m.id
                 layerPx[.mouth] = m.size
                 layerSrc[.mouth] = .edgeComponent

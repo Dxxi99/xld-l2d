@@ -1,0 +1,10 @@
+depth loaded: 1856x2640
+skeleton: 200921 px
+T after NMS: 352
+segments: 2324
+constraints: 434
+prior: 0.0..100.0  (n=2324)
+iterations used: 300
+remaining violations: 1 / 434
+adjust: mean 0.56  max 27.94  >5: 49
+saved fusion_result*.png

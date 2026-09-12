@@ -1,0 +1,15 @@
+image 1856x2640
+edge: 293991 px (6.00%)
+candidates: 66761
+raw T-junctions: 28164
+after NMS: 4456
+  stem E: 793
+  stem NE: 544
+  stem N: 581
+  stem NW: 541
+  stem W: 562
+  stem SW: 500
+  stem S: 435
+  stem SE: 500
+saved pixel_tjunction_v3.png
+saved crops
