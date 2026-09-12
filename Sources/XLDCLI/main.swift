@@ -349,6 +349,107 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdInpaint(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
+    let inpDir = outDir.appendingPathComponent("inpaint")
+    try? FileManager.default.createDirectory(at: inpDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("== XLD Minimal Inpainting ==")
+    print("image: \(url.lastPathComponent)  \(W) x \(H)")
+
+    // rebuild layers + occlusion
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
+    var flat = [UInt8](repeating: 0, count: W * H)
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
+    let flatLabeling = ConnectedComponents(minSize: 32).label(mask: flat, width: W, height: H)
+    let edgeLabeling = ConnectedComponents(minSize: 8).label(mask: edge, width: W, height: H)
+    let lc = LayerClassifier()
+    let assignment = lc.assign(flatLabeling: flatLabeling,
+                               edgeLabeling: edgeLabeling,
+                               width: W, height: H)
+
+    var layerMasks: [LayerID: [UInt8]] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        let src = assignment.layerSource[layer] ?? .flatComponent
+        let labeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
+        var mask = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labeling.componentID[i] == Int32(compID) {
+            mask[i] = 1
+        }
+        layerMasks[layer] = mask
+    }
+
+    let occGraph = OcclusionGraphBuilder().build(layerMasks: layerMasks, width: W, height: H)
+
+    let seq = DefaultMotionSequences.vtuber()
+    let lifetime = MotionSimulator().simulate(sequence: seq,
+                                              layerMasks: layerMasks,
+                                              layerZ: occGraph.layerZ,
+                                              originalTopRank: occGraph.pixelOwnerRank,
+                                              orderedLayers: occGraph.orderedLayers,
+                                              width: W, height: H)
+
+    print("")
+    print("== Lifetime Mask ==")
+    print(String(format: "  disocclusion px: %d  (%.2f%%)",
+                 lifetime.lifetimeCount,
+                 Float(lifetime.lifetimeCount) / Float(W * H) * 100))
+
+    // run inpaint engine (stubs)
+    let engine = MinimalInpaintingEngine()
+    let req = InpaintRequest(width: W, height: H,
+                             disocclusionMask: lifetime.lifetimeDisocclusion,
+                             contextRGBA: img.rgba,
+                             tileSize: 16,
+                             maxPixels: W * H)
+    guard let out = engine.inpaint(request: req) else {
+        print("inpaint failed"); return
+    }
+
+    print("")
+    print("== Inpaint Engine ==")
+    print("  structure     : \(engine.structure.name) (\(engine.structure.version))")
+    print("  appearance    : \(engine.appearance.name) (\(engine.appearance.version))")
+    print("  tiles req     : \(out.stats.tilesRequested)")
+    print("  tiles done    : \(out.stats.tilesInpainted)")
+    print("  pixels touched: \(out.stats.pixelsTouched)")
+    print("  cache hits    : \(out.stats.cacheHits)")
+    print("  cache misses  : \(out.stats.cacheMisses)")
+    print(String(format: "  inpaint time  : %.2f ms", out.stats.gpuMs))
+
+    // restore + save
+    let restored = RasterImage(width: W, height: H, rgba: out.rgba)
+    let restoredURL = inpDir.appendingPathComponent("restored.png")
+    try ImageIO.save(image: restored, url: restoredURL)
+
+    // comparison: 50/50 blend of original and restored
+    var blend = img.rgba
+    for i in 0..<(W * H * 4) {
+        blend[i] = img.rgba[i] * 0.5 + out.rgba[i] * 0.5
+    }
+    let blendURL = inpDir.appendingPathComponent("blend.png")
+    try ImageIO.save(image: RasterImage(width: W, height: H, rgba: blend), url: blendURL)
+
+    print("")
+    print("== Artifacts ==")
+    print("  \(restoredURL.path)")
+    print("  \(blendURL.path)")
+
+    print("")
+    print(String(format: "  total time: %.1f ms", Date().timeIntervalSince(t0) * 1000))
+}
+
 func cmdSimulate(_ path: String) throws {
     let url = URL(fileURLWithPath: path)
     let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
@@ -842,6 +943,9 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "inpaint":
+        guard positional.count >= 2 else { usage(); exit(1) }
+        try cmdInpaint(positional[1])
     case "simulate":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdSimulate(positional[1])
