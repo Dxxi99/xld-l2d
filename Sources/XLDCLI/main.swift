@@ -349,6 +349,97 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdMove(_ path: String, layer layerName: String, dx: Int, dy: Int) throws {
+    guard let targetLayer = LayerID(rawValue: layerName) else {
+        print("unknown layer: \(layerName)")
+        print("valid: \(LayerID.allCases.map { $0.rawValue }.joined(separator: ", "))")
+        return
+    }
+
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
+    let moveDir = outDir.appendingPathComponent("move_\(layerName)_\(dx)_\(dy)")
+    try? FileManager.default.createDirectory(at: moveDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("== XLD Move ==")
+    print("image:  \(url.lastPathComponent)  \(W) x \(H)")
+    print("layer:  \(layerName)")
+    print("delta:  (\(dx), \(dy))")
+
+    // build layers (reuse pipeline)
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
+
+    var flat = [UInt8](repeating: 0, count: W * H)
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
+
+    let cc = ConnectedComponents(minSize: 32)
+    let flatLabeling = cc.label(mask: flat, width: W, height: H)
+    let edgeCC = ConnectedComponents(minSize: 8)
+    let edgeLabeling = edgeCC.label(mask: edge, width: W, height: H)
+
+    let lc = LayerClassifier()
+    let assignment = lc.assign(flatLabeling: flatLabeling,
+                               edgeLabeling: edgeLabeling,
+                               width: W, height: H)
+
+    guard let compID = assignment.layerComponent[targetLayer] else {
+        print("layer \(layerName) not found in this image"); return
+    }
+    let src = assignment.layerSource[targetLayer] ?? .flatComponent
+    let srcLabeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
+
+    var targetMask = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) where srcLabeling.componentID[i] == Int32(compID) {
+        targetMask[i] = 1
+    }
+
+    print("")
+    print("== Original Layer ==")
+    print(String(format: "  component id : %d", compID))
+    print(String(format: "  pixel count  : %d", assignment.layerPixels[targetLayer] ?? 0))
+
+    let mover = LayerMover()
+    let result = mover.move(layer: targetLayer, mask: targetMask,
+                            width: W, height: H, dx: dx, dy: dy)
+
+    print("")
+    print("== Move Result ==")
+    print(String(format: "  original px      : %d", result.originalCount))
+    print(String(format: "  moved px         : %d", result.movedCount))
+    print(String(format: "  clipped (OOB)    : %d", result.clippedCount))
+    print(String(format: "  disocclusion px  : %d  (새로 드러남, inpaint 필요)",
+                 result.disocclusionCount))
+    print(String(format: "  new coverage px  : %d  (새로 덮음)", result.newCoverageCount))
+
+    if result.movedCount > 0 {
+        let disRatio = Float(result.disocclusionCount) / Float(result.movedCount) * 100.0
+        print(String(format: "  disocclusion / moved : %.1f%%", disRatio))
+    }
+
+    let disURL = moveDir.appendingPathComponent("disocclusion.png")
+    let ovlURL = moveDir.appendingPathComponent("overlay.png")
+    try MoveVisualizer.writeDisocclusion(result, url: disURL)
+    try MoveVisualizer.writeOverlay(result, original: img, url: ovlURL)
+
+    print("")
+    print("== Artifacts ==")
+    print("  \(disURL.path)")
+    print("  \(ovlURL.path)")
+
+    print("")
+    print(String(format: "  total time: %.1f ms", Date().timeIntervalSince(t0) * 1000))
+}
+
 func cmdLayers(_ path: String) throws {
     let url = URL(fileURLWithPath: path)
     let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
@@ -639,6 +730,12 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "move":
+        guard positional.count >= 5 else { usage(); exit(1) }
+        guard let dx = Int(positional[3]), let dy = Int(positional[4]) else {
+            usage(); exit(1)
+        }
+        try cmdMove(positional[1], layer: positional[2], dx: dx, dy: dy)
     case "layers":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdLayers(positional[1])

@@ -1,0 +1,29 @@
+{
+  "height" : 256,
+  "layerZ" : {
+    "arm_L" : 35,
+    "arm_R" : 36,
+    "background" : 0,
+    "body" : 20,
+    "clothes" : 30,
+    "eye_L" : 51,
+    "eye_R" : 52,
+    "eyebrow_L" : 53,
+    "eyebrow_R" : 54,
+    "face" : 40,
+    "hair_back" : 10,
+    "hair_front" : 60,
+    "head" : 38,
+    "mouth" : 50,
+    "neck" : 25
+  },
+  "orderedLayers" : [
+    "background",
+    "face",
+    "mouth",
+    "eye_L",
+    "eye_R",
+    "hair_front"
+  ],
+  "width" : 256
+}

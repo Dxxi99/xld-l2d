@@ -1,0 +1,107 @@
+{
+  "budget" : 20,
+  "layers" : {
+    "background" : {
+      "bbox" : [
+        0,
+        0,
+        255,
+        255
+      ],
+      "disocclusionBudget" : 29596,
+      "envelopePixels" : 65536,
+      "expanded" : [
+        0,
+        0,
+        255,
+        255
+      ],
+      "layerPixels" : 35940
+    },
+    "eye_L" : {
+      "bbox" : [
+        97,
+        116,
+        112,
+        123
+      ],
+      "disocclusionBudget" : 2588,
+      "envelopePixels" : 2688,
+      "expanded" : [
+        77,
+        96,
+        132,
+        143
+      ],
+      "layerPixels" : 100
+    },
+    "eye_R" : {
+      "bbox" : [
+        148,
+        116,
+        162,
+        123
+      ],
+      "disocclusionBudget" : 2565,
+      "envelopePixels" : 2640,
+      "expanded" : [
+        128,
+        96,
+        182,
+        143
+      ],
+      "layerPixels" : 75
+    },
+    "face" : {
+      "bbox" : [
+        61,
+        81,
+        194,
+        214
+      ],
+      "disocclusionBudget" : 18087,
+      "envelopePixels" : 30276,
+      "expanded" : [
+        41,
+        61,
+        214,
+        234
+      ],
+      "layerPixels" : 12189
+    },
+    "hair_front" : {
+      "bbox" : [
+        52,
+        18,
+        203,
+        83
+      ],
+      "disocclusionBudget" : 12870,
+      "envelopePixels" : 19968,
+      "expanded" : [
+        32,
+        0,
+        223,
+        103
+      ],
+      "layerPixels" : 7098
+    },
+    "mouth" : {
+      "bbox" : [
+        108,
+        163,
+        151,
+        169
+      ],
+      "disocclusionBudget" : 3692,
+      "envelopePixels" : 3948,
+      "expanded" : [
+        88,
+        143,
+        171,
+        189
+      ],
+      "layerPixels" : 256
+    }
+  }
+}
