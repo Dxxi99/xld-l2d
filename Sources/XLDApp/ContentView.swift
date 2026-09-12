@@ -1,141 +1,151 @@
 import SwiftUI
-import simd
-import XLDKit
 
-public struct ContentView: View {
-    @StateObject private var state = RigState()
+struct ContentView: View {
+    @EnvironmentObject var appState: AppState
 
-    @State private var model: XLDRuntimeModel?
-    @State private var triangleColors: [CGColor] = []
-    @State private var loadError: String?
+    // panel sizes (draggable via SplitView)
+    @State private var layersWidth: CGFloat = 220
+    @State private var inspectorWidth: CGFloat = 280
+    @State private var timelineHeight: CGFloat = 180
 
-    public init() {}
+    var body: some View {
+        VStack(spacing: 0) {
+            // ─── Toolbar ───
+            Toolbar(appState: appState)
+                .frame(height: 38)
+                .background(Color(white: 0.13))
+            Divider().background(Color(white: 0.25))
 
-    public var body: some View {
-        HStack(spacing: 0) {
-            ZStack {
-                if let m = model {
-                    MetalRigView(model: m,
-                                 yawDeg: state.yawDeg,
-                                 pitchDeg: state.pitchDeg,
-                                 sourceImageURL: m.sourceImageURL,
-                                 onFPS: { f in
-                                     DispatchQueue.main.async {
-                                         state.fps = f
-                                     }
-                                 })
-                } else if let err = loadError {
-                    VStack {
-                        Text("Load failed").font(.title)
-                        Text(err).font(.caption).foregroundColor(.red)
-                    }
-                } else {
-                    ProgressView("Loading model...")
+            // ─── Main 3-way split ───
+            HSplitView {
+                LayersPanel()
+                    .frame(minWidth: 160, idealWidth: layersWidth, maxWidth: 400)
+                    .background(Color(white: 0.11))
+
+                VSplitView {
+                    CanvasPanel()
+                        .frame(minHeight: 400)
+                        .background(Color(white: 0.06))
+
+                    TimelinePanel()
+                        .frame(minHeight: 100, idealHeight: timelineHeight, maxHeight: 400)
+                        .background(Color(white: 0.10))
                 }
-                VStack {
-                    Spacer()
-                    HStack {
-                        Text(String(format: "%.1f fps", state.fps))
-                            .font(.system(.caption, design: .monospaced))
-                            .padding(6)
-                            .background(Color.black.opacity(0.6))
-                            .foregroundColor(.green)
-                        Text(state.statusText)
-                            .font(.system(.caption2, design: .monospaced))
-                            .padding(6)
-                            .background(Color.black.opacity(0.6))
-                            .foregroundColor(.cyan)
-                        Spacer()
-                    }
-                }
-                .padding(8)
+                .frame(minWidth: 500)
+
+                InspectorPanel()
+                    .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 420)
+                    .background(Color(white: 0.11))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            VStack(alignment: .leading, spacing: 20) {
-                Text("XLD-L2D").font(.title).bold()
-
-                Divider()
-
-                VStack(alignment: .leading) {
-                    Text("Yaw: \(String(format: "%+.1f", state.yawDeg))°")
-                    Slider(value: $state.yawDeg, in: -30...30)
-                }
-
-                VStack(alignment: .leading) {
-                    Text("Pitch: \(String(format: "%+.1f", state.pitchDeg))°")
-                    Slider(value: $state.pitchDeg, in: -15...15)
-                }
-
-                Button("Reset") {
-                    state.yawDeg = 0
-                    state.pitchDeg = 0
-                }
-
-                Spacer()
-
-                Text("triangles: \(model?.mesh.triangleCount ?? 0)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(.secondary)
-            }
-            .padding(24)
-            .frame(width: 320)
-            .background(Color(NSColor.windowBackgroundColor))
+            // ─── Status bar ───
+            StatusBar(appState: appState)
+                .frame(height: 24)
+                .background(Color(white: 0.13))
         }
-        .onAppear { load() }
+        .background(Color(white: 0.10))
+    }
+}
+
+// ─── Toolbar (top) ───
+struct Toolbar: View {
+    @ObservedObject var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Button {
+                openImagePanel()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                    Text("Open Image…")
+                        .font(.system(size: 12))
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color(white: 0.20)))
+            .disabled(appState.isProcessing)
+
+            Divider().frame(height: 16)
+
+            HStack(spacing: 6) {
+                ToolbarIcon(systemName: "cursorarrow", label: "Select")
+                ToolbarIcon(systemName: "hand.draw", label: "Pan")
+                ToolbarIcon(systemName: "point.topleft.down.to.point.bottomright.curvepath", label: "Mesh")
+            }
+
+            Spacer()
+
+            Text("XLD-L2D")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85))
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                ToolbarIcon(systemName: "record.circle", label: "Record")
+                ToolbarIcon(systemName: "play.fill", label: "Play")
+            }
+        }
+        .padding(.horizontal, 10)
     }
 
-    private func load() {
-        do {
-            let dir: URL
-            if let envPath = ProcessInfo.processInfo.environment["XLD_MODEL_DIR"] {
-                dir = URL(fileURLWithPath: envPath)
-                print("[ContentView] using XLD_MODEL_DIR=\(envPath)")
-            } else {
-                dir = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("XLD-L2D/assets/real/swift_cache/model_v1")
-            }
-            let m = try XLDRuntimeModel.load(from: dir)
-            self.model = m
-            self.state.statusText = "loaded \(m.mesh.vertexCount)v \(m.mesh.triangleCount)t"
-
-            let imgURL = dir.appendingPathComponent("source.png")
-            if let ns = NSImage(contentsOf: imgURL) {
-                self.triangleColors = Self.sampleColors(image: ns, model: m)
-            } else {
-                self.triangleColors = [CGColor](repeating: CGColor(gray: 0.5, alpha: 1.0),
-                                                count: m.mesh.triangleCount)
-            }
-        } catch {
-            self.loadError = "\(error)"
+    private func openImagePanel() {
+        print("[Toolbar] openImagePanel() called")
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Select an illustration (PNG)"
+        panel.prompt = "Open"
+        let response = panel.runModal()
+        print("[Toolbar] panel response=\(response.rawValue)")
+        if response == .OK, let url = panel.url {
+            print("[Toolbar] selected: \(url.path)")
+            appState.openImage(url)
         }
     }
+}
 
-    private static func sampleColors(image: NSImage, model: XLDRuntimeModel) -> [CGColor] {
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff) else {
-            return [CGColor](repeating: CGColor(gray: 0.5, alpha: 1.0),
-                             count: model.mesh.triangleCount)
-        }
-        let W = bitmap.pixelsWide
-        let H = bitmap.pixelsHigh
-        let verts = model.mesh.vertices
-        let tris = model.mesh.triangles
-        var colors: [CGColor] = []
-        colors.reserveCapacity(tris.count)
-        for tri in tris {
-            let i0 = Int(tri.x), i1 = Int(tri.y), i2 = Int(tri.z)
-            let cx = (verts[i0].x + verts[i1].x + verts[i2].x) / 3
-            let cy = (verts[i0].y + verts[i1].y + verts[i2].y) / 3
-            let px = max(0, min(W-1, Int(cx)))
-            let py = max(0, min(H-1, Int(cy)))
-            if let c = bitmap.colorAt(x: px, y: py) {
-                colors.append(CGColor(red: c.redComponent, green: c.greenComponent,
-                                      blue: c.blueComponent, alpha: c.alphaComponent))
-            } else {
-                colors.append(CGColor(gray: 0.5, alpha: 1.0))
+struct ToolbarIcon: View {
+    let systemName: String
+    let label: String
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 13))
+            .frame(width: 26, height: 22)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color(white: 0.18)))
+            .foregroundColor(.white.opacity(0.8))
+            .help(label)
+    }
+}
+
+// ─── Status bar (bottom) ───
+struct StatusBar: View {
+    @ObservedObject var appState: AppState
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(appState.statusMessage)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.white.opacity(0.7))
+                .lineLimit(1)
+
+            if appState.isProcessing {
+                ProgressView(value: Double(appState.progressStep),
+                             total: Double(appState.progressTotal))
+                    .frame(width: 140)
+                    .tint(.cyan)
             }
+
+            Spacer()
+
+            Text(String(format: "%.1f fps", appState.fps))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.green.opacity(0.8))
         }
-        return colors
+        .padding(.horizontal, 10)
     }
 }
