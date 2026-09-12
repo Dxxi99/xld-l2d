@@ -349,6 +349,109 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdBenchSim(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("== XLD Bench-Sim ==")
+    print("image: \(W) x \(H)  (\(W * H) px)")
+
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
+
+    var flat = [UInt8](repeating: 0, count: W * H)
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
+    let flatLabeling = ConnectedComponents(minSize: 32).label(mask: flat, width: W, height: H)
+    let edgeLabeling = ConnectedComponents(minSize: 8).label(mask: edge, width: W, height: H)
+    let assignment = LayerClassifier().assign(flatLabeling: flatLabeling,
+                                              edgeLabeling: edgeLabeling,
+                                              width: W, height: H)
+
+    var layerMasks: [LayerID: [UInt8]] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        let src = assignment.layerSource[layer] ?? .flatComponent
+        let labeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
+        var mask = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labeling.componentID[i] == Int32(compID) {
+            mask[i] = 1
+        }
+        layerMasks[layer] = mask
+    }
+
+    let occ = OcclusionGraphBuilder().build(layerMasks: layerMasks, width: W, height: H)
+    let seq = DefaultMotionSequences.vtuber()
+
+    // CPU
+    let cpuSim = MotionSimulator()
+    var t = Date()
+    let cpuResult = cpuSim.simulate(sequence: seq,
+                                    layerMasks: layerMasks,
+                                    layerZ: occ.layerZ,
+                                    originalTopRank: occ.pixelOwnerRank,
+                                    orderedLayers: occ.orderedLayers,
+                                    width: W, height: H)
+    let cpuMs = Date().timeIntervalSince(t) * 1000
+
+    // GPU
+    guard let gpuSim = MetalMotionSimulator() else {
+        print("gpu sim unavailable"); return
+    }
+    t = Date()
+    guard let gpuResult = gpuSim.simulate(sequence: seq,
+                                          layerMasks: layerMasks,
+                                          layerZ: occ.layerZ,
+                                          originalTopRank: occ.pixelOwnerRank,
+                                          orderedLayers: occ.orderedLayers,
+                                          width: W, height: H) else {
+        print("gpu sim failed"); return
+    }
+    let gpuMs = Date().timeIntervalSince(t) * 1000
+
+    print("")
+    print("-- Timing --")
+    print(String(format: "  cpu sim   : %.1f ms", cpuMs))
+    print(String(format: "  gpu sim   : %.1f ms", gpuMs))
+    print(String(format: "  speedup   : %.1fx", cpuMs / max(gpuMs, 0.001)))
+
+    print("")
+    print("-- Lifetime Agreement --")
+    print(String(format: "  lifetime px cpu=%d gpu=%d",
+                 cpuResult.lifetimeCount, gpuResult.lifetimeCount))
+
+    var mismatch = 0
+    for i in 0..<(W * H) {
+        if cpuResult.lifetimeDisocclusion[i] != gpuResult.lifetimeDisocclusion[i] { mismatch += 1 }
+    }
+    print(String(format: "  lifetime mismatches: %d", mismatch))
+
+    print("")
+    print("-- Pose count --")
+    print(String(format: "  cpu poses: %d", cpuResult.poseResults.count))
+    print(String(format: "  gpu poses: %d", gpuResult.poseResults.count))
+
+    if !cpuResult.poseResults.isEmpty, !gpuResult.poseResults.isEmpty {
+        print("")
+        print("  pose              cpu px    gpu px    diff")
+        let n = min(cpuResult.poseResults.count, gpuResult.poseResults.count)
+        var maxDiff = 0
+        for i in 0..<n {
+            let c = cpuResult.poseResults[i]
+            let g = gpuResult.poseResults[i]
+            let d = abs(c.disocclusionCount - g.disocclusionCount)
+            if d > maxDiff { maxDiff = d }
+            print(String(format: "  %-16@  %6d    %6d    %d",
+                         c.name as NSString, c.disocclusionCount, g.disocclusionCount, d))
+        }
+        print(String(format: "  max diff: %d", maxDiff))
+    }
+}
+
 func cmdPipelineFull(_ path: String) throws {
     let url = URL(fileURLWithPath: path)
     let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
@@ -1107,6 +1210,9 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "bench-sim":
+        guard positional.count >= 2 else { usage(); exit(1) }
+        try cmdBenchSim(positional[1])
     case "pipeline-full":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdPipelineFull(positional[1])

@@ -187,5 +187,56 @@ public final class MetalRuntime: @unchecked Sendable {
         outClass[idx] = uchar(best);
         outConf[idx]  = 0.80f;
     }
-    """
+
+    kernel void pose_top_rank(
+        device const uchar* masks   [[ buffer(0) ]],
+        device const int*   dxs     [[ buffer(1) ]],
+        device const int*   dys     [[ buffer(2) ]],
+        device const short* ranks   [[ buffer(3) ]],
+        device short*       outRank [[ buffer(4) ]],
+        constant uint&      w       [[ buffer(5) ]],
+        constant uint&      h       [[ buffer(6) ]],
+        constant uint&      nLayers [[ buffer(7) ]],
+        uint2 gid                   [[ thread_position_in_grid ]]
+    ) {
+        if (gid.x >= w || gid.y >= h) return;
+        uint idx = gid.y * w + gid.x;
+        short r = -1;
+        uint planeSize = w * h;
+        for (uint i = 0; i < nLayers; ++i) {
+            int sx = int(gid.x) - dxs[i];
+            int sy = int(gid.y) - dys[i];
+            if (sx < 0 || sy < 0 || sx >= int(w) || sy >= int(h)) continue;
+            uint sIdx = uint(sy) * w + uint(sx);
+            uchar m = masks[i * planeSize + sIdx];
+            if (m == 1) r = ranks[i];
+        }
+        outRank[idx] = r;
+    }
+
+    kernel void compare_rank(
+        device const short* orig    [[ buffer(0) ]],
+        device const short* now     [[ buffer(1) ]],
+        device uchar*       disocc  [[ buffer(2) ]],
+        constant uint&      total   [[ buffer(3) ]],
+        uint gid                    [[ thread_position_in_grid ]]
+    ) {
+        if (gid >= total) return;
+        short o = orig[gid];
+        short n = now[gid];
+        if (o < 0) { disocc[gid] = 0; return; }
+        if (n < 0 || o != n) disocc[gid] = 1;
+        else disocc[gid] = 0;
+    }
+
+    kernel void union_mask(
+        device const uchar* src [[ buffer(0) ]],
+        device uchar*       acc [[ buffer(1) ]],
+        constant uint&      total [[ buffer(2) ]],
+        uint gid [[ thread_position_in_grid ]]
+    ) {
+        if (gid >= total) return;
+        if (src[gid] == 1) acc[gid] = 1;
+    }
 }
+

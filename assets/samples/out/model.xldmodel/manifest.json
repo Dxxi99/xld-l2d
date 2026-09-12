@@ -26,6 +26,8 @@
     "hair_front" : "flatComponent",
     "mouth" : "edgeComponent"
   },
+  "lifetimePoseCount" : 12,
+  "lifetimeSequenceName" : "vtuber-basic",
   "occlusionOrder" : [
     "background",
     "face",

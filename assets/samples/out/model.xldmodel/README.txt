@@ -4,3 +4,6 @@ layers=6
 occlusionOrder=background < face < mouth < eye_L < eye_R < hair_front
 movementBudget=20px
 envelopeLayers=6
+lifetimeSequence=vtuber-basic
+lifetimePoses=12
+lifetimeDisocclusionPx=16118
