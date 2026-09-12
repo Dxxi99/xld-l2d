@@ -349,6 +349,118 @@ func cmdFused(_ path: String) throws {
     print(String(format: "  pass2 errors: cpu=%d gpu=%d", v2CPU.errorCount, r.pass2Errors))
 }
 
+func cmdSimulate(_ path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    let outDir = url.deletingLastPathComponent().appendingPathComponent("out")
+    let simDir = outDir.appendingPathComponent("lifetime")
+    try? FileManager.default.createDirectory(at: simDir, withIntermediateDirectories: true)
+
+    let t0 = Date()
+    let img = try ImageIO.load(url: url)
+    let W = img.width, H = img.height
+    print("== XLD Lifetime Simulation ==")
+    print("image: \(url.lastPathComponent)  \(W) x \(H)  (\(W * H) px)")
+
+    // --- rebuild layers ---
+    guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
+
+    var flat = [UInt8](repeating: 0, count: W * H)
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
+
+    let flatLabeling = ConnectedComponents(minSize: 32).label(mask: flat, width: W, height: H)
+    let edgeLabeling = ConnectedComponents(minSize: 8).label(mask: edge, width: W, height: H)
+
+    let lc = LayerClassifier()
+    let assignment = lc.assign(flatLabeling: flatLabeling,
+                               edgeLabeling: edgeLabeling,
+                               width: W, height: H)
+
+    var layerMasks: [LayerID: [UInt8]] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        let src = assignment.layerSource[layer] ?? .flatComponent
+        let labeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
+        var mask = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labeling.componentID[i] == Int32(compID) {
+            mask[i] = 1
+        }
+        layerMasks[layer] = mask
+    }
+
+    // --- build original occlusion graph ---
+    let occBuilder = OcclusionGraphBuilder()
+    let occGraph = occBuilder.build(layerMasks: layerMasks, width: W, height: H)
+
+    print("")
+    print("== Layers Present ==")
+    let orderedLayers: [LayerID] = [.background, .hairFront, .face, .eyeL, .eyeR, .mouth]
+    for l in orderedLayers where layerMasks[l] != nil {
+        print("  \(l.rawValue)")
+    }
+
+    // --- run simulation ---
+    let seq = DefaultMotionSequences.vtuber()
+    let sim = MotionSimulator()
+
+    let tSim = Date()
+    let result = sim.simulate(sequence: seq,
+                              layerMasks: layerMasks,
+                              layerZ: occGraph.layerZ,
+                              originalTopRank: occGraph.pixelOwnerRank,
+                              orderedLayers: occGraph.orderedLayers,
+                              width: W, height: H)
+    let dtSim = Date().timeIntervalSince(tSim)
+
+    print("")
+    print("== Sequence: \(result.sequenceName) ==")
+    print("  poses: \(result.poseResults.count)")
+
+    print("")
+    print("  pose              disocc px   topChanged  unmasked")
+    for p in result.poseResults {
+        print(String(format: "  %-16@  %8d   %9d  %8d",
+                     p.name as NSString, p.disocclusionCount,
+                     p.topChangedCount, p.unmaskedCount))
+    }
+
+    let lifetimePct = Float(result.lifetimeCount) / Float(result.totalPixels) * 100.0
+    let keptPct = 100.0 - lifetimePct
+
+    print("")
+    print("== Lifetime Disocclusion ==")
+    print(String(format: "  total pixels       : %d", result.totalPixels))
+    print(String(format: "  lifetime disocc px : %d", result.lifetimeCount))
+    print(String(format: "  needs inpaint      : %.2f%%", lifetimePct))
+    print(String(format: "  original preserved : %.2f%%", keptPct))
+
+    // --- write outputs ---
+    let ltURL = simDir.appendingPathComponent("lifetime_disocclusion.png")
+    let ovURL = simDir.appendingPathComponent("lifetime_overlay.png")
+    try LifetimeVisualizer.writeLifetime(result, url: ltURL)
+    try LifetimeVisualizer.writeLifetimeOverlay(result, original: img, url: ovURL)
+
+    for p in result.poseResults {
+        let purl = simDir.appendingPathComponent("pose_\(p.name).png")
+        try LifetimeVisualizer.writePose(p, width: W, height: H, url: purl)
+    }
+
+    print("")
+    print("== Artifacts ==")
+    print("  \(ltURL.path)")
+    print("  \(ovURL.path)")
+    print("  \(result.poseResults.count) pose images")
+
+    print("")
+    print(String(format: "  sim time  : %.1f ms", dtSim * 1000))
+    print(String(format: "  total time: %.1f ms", Date().timeIntervalSince(t0) * 1000))
+}
+
 func cmdMove(_ path: String, layer layerName: String, dx: Int, dy: Int) throws {
     guard let targetLayer = LayerID(rawValue: layerName) else {
         print("unknown layer: \(layerName)")
@@ -730,6 +842,9 @@ do {
     case "make-sample-big":
         guard positional.count >= 2 else { usage(); exit(1) }
         try cmdMakeSampleBig(positional[1])
+    case "simulate":
+        guard positional.count >= 2 else { usage(); exit(1) }
+        try cmdSimulate(positional[1])
     case "move":
         guard positional.count >= 5 else { usage(); exit(1) }
         guard let dx = Int(positional[3]), let dy = Int(positional[4]) else {
