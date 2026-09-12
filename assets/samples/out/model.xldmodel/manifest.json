@@ -1,0 +1,30 @@
+{
+  "imageHeight" : 256,
+  "imagePath" : "character.png",
+  "imageWidth" : 256,
+  "layerComponentID" : {
+    "background" : 0,
+    "eye_L" : 346,
+    "eye_R" : 347,
+    "face" : 241,
+    "hair_front" : 50,
+    "mouth" : 727
+  },
+  "layerPixelCount" : {
+    "background" : 35940,
+    "eye_L" : 100,
+    "eye_R" : 75,
+    "face" : 12189,
+    "hair_front" : 7098,
+    "mouth" : 256
+  },
+  "layerSource" : {
+    "background" : "flatComponent",
+    "eye_L" : "flatComponent",
+    "eye_R" : "flatComponent",
+    "face" : "flatComponent",
+    "hair_front" : "flatComponent",
+    "mouth" : "edgeComponent"
+  },
+  "version" : "0.1.0"
+}

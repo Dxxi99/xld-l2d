@@ -363,33 +363,39 @@ func cmdLayers(_ path: String) throws {
     guard let gpu = MetalPipeline() else { print("gpu unavailable"); return }
 
     let tGPU = Date()
-    guard let pipe = gpu.runFullPipeline(image: img) else { print("gpu failed"); return }
+    guard gpu.runFullPipeline(image: img) != nil else { print("gpu failed"); return }
     let dtGPU = Date().timeIntervalSince(tGPU)
 
-    let labels = gpu.classify(image: img) ?? []
-    guard labels.count == W * H else { print("classify failed"); return }
+    guard let labels = gpu.classify(image: img), labels.count == W * H else {
+        print("classify failed"); return
+    }
 
     var flat = [UInt8](repeating: 0, count: W * H)
-    for i in 0..<(W * H) where labels[i].classID == 0 { flat[i] = 1 }
+    var edge = [UInt8](repeating: 0, count: W * H)
+    for i in 0..<(W * H) {
+        if labels[i].classID == 0 { flat[i] = 1 }
+        if labels[i].classID == 1 { edge[i] = 1 }
+    }
 
     let tCC = Date()
     let cc = ConnectedComponents(minSize: 32)
-    let labeling = cc.label(mask: flat, width: W, height: H)
+    let flatLabeling = cc.label(mask: flat, width: W, height: H)
+    let edgeCC = ConnectedComponents(minSize: 8)
+    let edgeLabeling = edgeCC.label(mask: edge, width: W, height: H)
     let dtCC = Date().timeIntervalSince(tCC)
-
-    var kept = 0
-    for s in labeling.componentSizes where s >= 32 { kept += 1 }
 
     print("")
     print("== Connected Components ==")
-    print(String(format: "  total comps   : %d", labeling.componentCount))
-    print(String(format: "  kept (>=32px) : %d", kept))
+    print(String(format: "  flat comps    : %d", flatLabeling.componentCount))
+    print(String(format: "  edge comps    : %d", edgeLabeling.componentCount))
     print(String(format: "  cc time       : %.1f ms", dtCC * 1000))
 
     let tLC = Date()
     let lc = LayerClassifier()
-    let assignment = lc.assign(labeling: labeling, width: W, height: H)
-    let dtLC = Date().timeIntervalSince(tLC)
+    let assignment = lc.assign(flatLabeling: flatLabeling,
+                               edgeLabeling: edgeLabeling,
+                               width: W, height: H)
+    _ = Date().timeIntervalSince(tLC)
 
     print("")
     print("== Layer Assignment ==")
@@ -397,47 +403,117 @@ func cmdLayers(_ path: String) throws {
     for layer in ordered {
         if let compID = assignment.layerComponent[layer] {
             let size = assignment.layerPixels[layer] ?? 0
+            let src = assignment.layerSource[layer]?.rawValue ?? "?"
+            let labeling = (src == "edgeComponent") ? edgeLabeling : flatLabeling
             let bb = labeling.componentBBoxes[compID]
-            print(String(format: "  %-12@  comp=%-4d  size=%-6d  bbox=(%4d,%4d)-(%4d,%4d)",
-                         layer.rawValue as NSString, compID, size,
+            print(String(format: "  %-12@  comp=%-4d  size=%-6d  src=%-15@  bbox=(%4d,%4d)-(%4d,%4d)",
+                         layer.rawValue as NSString, compID, size, src as NSString,
                          bb.x0, bb.y0, bb.x1, bb.y1))
         } else {
             print(String(format: "  %-12@  (not found)", layer.rawValue as NSString))
         }
     }
-    print(String(format: "  classify time: %.1f ms", dtLC * 1000))
 
     let visURL = outDir.appendingPathComponent("components.png")
-    try ComponentVisualizer.writeVisualization(labeling, width: W, height: H, url: visURL)
+    try ComponentVisualizer.writeVisualization(flatLabeling, width: W, height: H, url: visURL)
     print("")
     print("  visual: \(visURL.path)")
 
-    // per-layer mask 시각화
-    var layerIndex: [LayerID: UInt8] = [:]
-    var rank: UInt8 = 1
+    var layerMasks: [String: [UInt8]] = [:]
     for layer in ordered {
-        if let compID = assignment.layerComponent[layer] {
-            layerIndex[layer] = rank
-            rank += 1
+        guard let compID = assignment.layerComponent[layer] else { continue }
+        let src = assignment.layerSource[layer] ?? .flatComponent
+        let labeling = (src == .edgeComponent) ? edgeLabeling : flatLabeling
 
-            var rgba = [Float](repeating: 0, count: W * H * 4)
-            for i in 0..<(W * H) {
-                if labeling.componentID[i] == Int32(compID) {
-                    rgba[i * 4 + 0] = 1.0
-                    rgba[i * 4 + 1] = 1.0
-                    rgba[i * 4 + 2] = 1.0
-                }
-                rgba[i * 4 + 3] = 1.0
-            }
-            let mURL = outDir.appendingPathComponent("layer_\(layer.rawValue).png")
-            let rimg = RasterImage(width: W, height: H, rgba: rgba)
-            try ImageIO.save(image: rimg, url: mURL)
-            print("  wrote \(mURL.lastPathComponent)")
+        var mask = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) where labeling.componentID[i] == Int32(compID) {
+            mask[i] = 1
         }
+        layerMasks[layer.rawValue] = mask
+
+        var rgba = [Float](repeating: 0, count: W * H * 4)
+        for i in 0..<(W * H) {
+            if mask[i] == 1 {
+                rgba[i * 4 + 0] = 1.0
+                rgba[i * 4 + 1] = 1.0
+                rgba[i * 4 + 2] = 1.0
+            }
+            rgba[i * 4 + 3] = 1.0
+        }
+        let mURL = outDir.appendingPathComponent("layer_\(layer.rawValue).png")
+        let rimg = RasterImage(width: W, height: H, rgba: rgba)
+        try ImageIO.save(image: rimg, url: mURL)
+        print("  wrote \(mURL.lastPathComponent)")
     }
+
+    let tOcc = Date()
+    var typedMasks: [LayerID: [UInt8]] = [:]
+    for (k, v) in layerMasks {
+        if let lid = LayerID(rawValue: k) { typedMasks[lid] = v }
+    }
+    let occBuilder = OcclusionGraphBuilder()
+    let occGraph = occBuilder.build(layerMasks: typedMasks, width: W, height: H)
+    let envBuilder = MovementEnvelopeBuilder(budget: 20)
+    let envelope = envBuilder.build(layerMasks: typedMasks, width: W, height: H)
+    let dtOcc = Date().timeIntervalSince(tOcc)
+
+    print("")
+    print("== Occlusion Graph ==")
+    print(String(format: "  layer order   : %@",
+                 occGraph.orderedLayers.map { $0.rawValue }.joined(separator: " < ") as NSString))
+    var ownerCounts: [Int] = Array(repeating: 0, count: occGraph.orderedLayers.count)
+    var unowned = 0
+    for r in occGraph.pixelOwnerRank {
+        if r < 0 { unowned += 1 } else { ownerCounts[Int(r)] += 1 }
+    }
+    print("  pixelOwner distribution:")
+    for (i, l) in occGraph.orderedLayers.enumerated() {
+        print(String(format: "    %-12@  %7d px", l.rawValue as NSString, ownerCounts[i]))
+    }
+    print(String(format: "    (unowned)     %7d px", unowned))
+
+    print("")
+    print("== Movement Envelope (budget=20px) ==")
+    print("  layer         layerPx   envelopePx  disocclusionBudget")
+    let sortedEnv = envelope.layers.sorted { $0.value.layerPixels > $1.value.layerPixels }
+    for (layer, e) in sortedEnv {
+        print(String(format: "  %-12@  %7d   %9d   %9d",
+                     layer.rawValue as NSString, e.layerPixels, e.envelopePixels, e.disocclusionBudget))
+    }
+
+    var compIDs: [String: Int] = [:]
+    var sizes:   [String: Int] = [:]
+    var srcMap:  [String: String] = [:]
+    for (layer, compID) in assignment.layerComponent {
+        compIDs[layer.rawValue] = compID
+        sizes[layer.rawValue] = assignment.layerPixels[layer] ?? 0
+        srcMap[layer.rawValue] = assignment.layerSource[layer]?.rawValue ?? "?"
+    }
+
+    let doc = XLDModelDocument(
+        version: XLDKit.version,
+        imagePath: url.lastPathComponent,
+        imageWidth: W,
+        imageHeight: H,
+        layerComponentID: compIDs,
+        layerPixelCount: sizes,
+        layerSource: srcMap,
+        layerMasks: layerMasks,
+        occlusionGraph: occGraph,
+        movementEnvelope: envelope
+    )
+
+    let modelDir = outDir.appendingPathComponent("model.xldmodel")
+    try XLDModelIO.write(doc, to: modelDir)
+    print("")
+    print("  wrote \(modelDir.lastPathComponent)/")
+    print("    manifest.json")
+    print("    masks/ (\(layerMasks.count) PNG)")
+    print("    README.txt")
 
     print("")
     print(String(format: "  gpu pipeline: %.2f ms", dtGPU * 1000))
+    print(String(format: "  occlusion   : %.2f ms", dtOcc * 1000))
     print(String(format: "  total time  : %.1f ms", Date().timeIntervalSince(t0) * 1000))
 }
 
