@@ -137,6 +137,12 @@ run("copy depth (2.5D)", [
     str(DEPTH_PNG), str(OUT_MODEL)
 ])
 
+# 9) anime face regions → meta.txt (자동 눈/입 좌표)
+run("face regions (auto)", [
+    str(SCRIPT_DIR / "face_regions.py"),
+    str(UPSCALED_PNG), str(OUT_MODEL)
+])
+
 print("=" * 70)
 print(f"[done] model ready: {OUT_MODEL}")
 print("=" * 70)

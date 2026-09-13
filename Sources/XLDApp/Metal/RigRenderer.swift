@@ -17,6 +17,27 @@ final class RigRenderer: NSObject, MTKViewDelegate {
     var yawDeg: Float = 0
     var pitchDeg: Float = 0
 
+    // depth 변위 배율 (튜닝 포인트)
+    var depthFrontW: Float = 1.0   // 앞쪽 vertex 배율 (1.0 = 무효과)
+    var depthBackW: Float  = 1.0   // 뒤쪽 vertex 배율
+
+    // === Face feature (트래킹 → 캐릭터) ===
+    var eyeOpen_L: Float = 1.0     // 1=뜸, 0=감음
+    var eyeOpen_R: Float = 1.0
+    var mouthOpen: Float = 0.0     // 0~1
+
+    // 캐릭터 얼굴 눈/입 중심 (정규화 0~1, 캐릭터 이미지 기준)
+    // meta.txt 의 auto_face_pivot_y 를 기준으로 추정, 나중에 자동 추출 가능
+    var eyeL_centerN: SIMD2<Float> = SIMD2(0.38, 0.22)
+    var eyeR_centerN: SIMD2<Float> = SIMD2(0.62, 0.22)
+    var mouth_centerN: SIMD2<Float> = SIMD2(0.50, 0.30)
+    var eye_radiusN: Float = 0.06   // 이미지 폭 대비
+    var mouth_radiusN: Float = 0.08
+
+    // 변형 강도 (튜닝)
+    var eyeSquash: Float = 0.0     // 눈 감을 때 Y 압축 계수
+    var mouthStretch: Float = 0.8   // 입 벌릴 때 Y 확대 계수
+
     // FPS 측정
     private var lastFrameTime: CFTimeInterval = 0
     private var smoothedFPS: Double = 0
@@ -61,7 +82,6 @@ final class RigRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // Vertex layout: position(2) + basis(2) + uv(2) = 6 floats
     private func buildBuffers() {
         let verts = model.mesh.vertices
         let bx = model.rig.basisX
@@ -140,11 +160,9 @@ final class RigRenderer: NSObject, MTKViewDelegate {
               let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc)
         else { return }
 
-        // uniforms
-        // 튜닝: rX/rY를 스케일 보정 + 배율
         let sclX = Float(model.width) / 1856.0
         let sclY = Float(model.height) / 2640.0
-        let tuneR = model.meta.autoTuneR * 1.3  // 1.8→~2.3
+        let tuneR = model.meta.autoTuneR * 1.3
         let sx = sin(yawDeg * .pi / 180) * model.rig.rX * sclX * tuneR
         let sy = sin(pitchDeg * .pi / 180) * model.rig.rY * sclY * tuneR
 
@@ -165,7 +183,20 @@ final class RigRenderer: NSObject, MTKViewDelegate {
             var facePivotY: Float
             var faceRotScale: Float
             var facePersp: Float
-            var reserved3: Float
+            var depthFrontW: Float
+            var depthBackW: Float
+
+            var eyeLCenter: SIMD2<Float>
+            var eyeRCenter: SIMD2<Float>
+            var mouthCenter: SIMD2<Float>
+            var eyeRadius: Float
+            var mouthRadius: Float
+            var eyeOpen_L: Float
+            var eyeOpen_R: Float
+            var mouthOpen: Float
+            var eyeSquash: Float
+            var mouthStretch: Float
+            var pad2: Float
         }
         let W = Float(model.width), H = Float(model.height)
         let vp = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
@@ -188,7 +219,19 @@ final class RigRenderer: NSObject, MTKViewDelegate {
                          facePivotY: model.meta.autoFacePivotY,
                          faceRotScale: model.meta.autoFaceRotScale,
                          facePersp: 0.07,
-                         reserved3: 0)
+                         depthFrontW: depthFrontW,
+                         depthBackW: depthBackW,
+                         eyeLCenter: SIMD2(eyeL_centerN.x * W, eyeL_centerN.y * H),
+                         eyeRCenter: SIMD2(eyeR_centerN.x * W, eyeR_centerN.y * H),
+                         mouthCenter: SIMD2(mouth_centerN.x * W, mouth_centerN.y * H),
+                         eyeRadius: eye_radiusN * W,
+                         mouthRadius: mouth_radiusN * W,
+                         eyeOpen_L: eyeOpen_L,
+                         eyeOpen_R: eyeOpen_R,
+                         mouthOpen: mouthOpen,
+                         eyeSquash: eyeSquash,
+                         mouthStretch: mouthStretch,
+                         pad2: 0)
 
         enc.setRenderPipelineState(pipeline)
         enc.setVertexBuffer(vb, offset: 0, index: 0)
@@ -204,7 +247,6 @@ final class RigRenderer: NSObject, MTKViewDelegate {
         cmd.present(drawable)
         cmd.commit()
 
-        // FPS 측정
         let now = CACurrentMediaTime()
         if lastFrameTime > 0 {
             let dt = now - lastFrameTime

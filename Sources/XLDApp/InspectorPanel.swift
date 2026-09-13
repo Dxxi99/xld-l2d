@@ -66,11 +66,11 @@ struct PropertiesTab: View {
 
                     SliderRow(label: "Yaw",
                               value: $appState.yawDeg,
-                              range: -60...60,
+                              range: -30...30,
                               format: "%+.1f°")
                     SliderRow(label: "Pitch",
                               value: $appState.pitchDeg,
-                              range: -45...45,
+                              range: -30...30,
                               format: "%+.1f°")
 
                     Button("Reset") { appState.resetPose() }
@@ -84,63 +84,47 @@ struct PropertiesTab: View {
             }
             .groupBoxStyle(InspectorGroupBox())
 
-            // Face Tracking
+            // Face Tracking (MediaPipe only)
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Face Tracking")
+                    Text("Face Tracking (MediaPipe)")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.white.opacity(0.5))
 
-                    Toggle(isOn: Binding(
-                        get: { appState.trackingEnabled },
-                        set: { newVal in
-    print("[Inspector] toggle set -> \(newVal)")
-    appState.toggleTracking()
-}
-                    )) {
-                        Text("Enable").font(.system(size: 11))
-                    }
+                    Toggle("Enable MediaPipe", isOn: Binding(
+                        get: { appState.mediaPipeEnabled },
+                        set: { _ in appState.toggleMediaPipe() }
+                    ))
                     .toggleStyle(.switch)
-                    .tint(.cyan)
+                    .tint(.green)
 
-                    HStack {
-                        Text("Camera FPS").font(.system(size: 11)).foregroundColor(.white.opacity(0.7))
-                        Spacer()
-                        Picker("", selection: $appState.trackingFPS) {
-                            Text("30").tag(30)
-                            Text("60").tag(60)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 90)
-                        .disabled(appState.trackingEnabled)
-                    }
-
-                    if appState.trackingEnabled {
+                    if appState.mediaPipeEnabled {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(appState.faceDetected ? Color.green : Color.red)
+                                .fill(appState.mediaPipeClient.lastBlendshape.hasFace ? Color.green : Color.red)
                                 .frame(width: 8, height: 8)
-                            Text(appState.faceDetected ? "Face OK" : "No face")
+                            Text(appState.mediaPipeClient.lastBlendshape.hasFace ? "Face OK" : "No face")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.7))
                             Spacer()
-                            Text(String(format: "%.0f fps", appState.cameraFPS))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.green.opacity(0.85))
                         }
                     }
 
-                    if let err = appState.cameraTracker.errorMessage {
-                        Text(err)
-                            .font(.system(size: 9))
-                            .foregroundColor(.red.opacity(0.9))
-                            .lineLimit(2)
-                    }
+                    Text("Face Regions (auto from meta)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(.top, 4)
+                    RegionRow(label: "EyeL X", value: $appState.eyeL_regionX)
+                    RegionRow(label: "EyeL Y", value: $appState.eyeL_regionY)
+                    RegionRow(label: "EyeR X", value: $appState.eyeR_regionX)
+                    RegionRow(label: "EyeR Y", value: $appState.eyeR_regionY)
+                    RegionRow(label: "Mouth X", value: $appState.mouth_regionX)
+                    RegionRow(label: "Mouth Y", value: $appState.mouth_regionY)
+                    RegionRow(label: "Eye R", value: $appState.eye_radiusN)
+                    RegionRow(label: "Mouth R", value: $appState.mouth_radiusN)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
             }
-            .groupBoxStyle(InspectorGroupBox())
+
         }
     }
 }
@@ -182,5 +166,25 @@ struct InspectorGroupBox: GroupBoxStyle {
         configuration.content
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.16)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(white: 0.24), lineWidth: 1))
+    }
+}
+
+
+struct RegionRow: View {
+    let label: String
+    @Binding var value: Double
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 55, alignment: .leading)
+            Slider(value: $value, in: 0...1)
+                .controlSize(.mini)
+            Text(String(format: "%.2f", value))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.white.opacity(0.6))
+                .frame(width: 36, alignment: .trailing)
+        }
     }
 }

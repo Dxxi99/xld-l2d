@@ -22,16 +22,9 @@ struct ContentView: View {
                     .frame(minWidth: 160, idealWidth: layersWidth, maxWidth: 400)
                     .background(Color(white: 0.11))
 
-                VSplitView {
-                    CanvasPanel()
-                        .frame(minHeight: 400)
-                        .background(Color(white: 0.06))
-
-                    TimelinePanel()
-                        .frame(minHeight: 100, idealHeight: timelineHeight, maxHeight: 400)
-                        .background(Color(white: 0.10))
-                }
-                .frame(minWidth: 500)
+                CanvasPanel()
+                    .frame(minWidth: 500)
+                    .background(Color(white: 0.06))
 
                 InspectorPanel()
                     .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 420)
@@ -44,6 +37,16 @@ struct ContentView: View {
                 .background(Color(white: 0.13))
         }
         .background(Color(white: 0.10))
+        .overlay(alignment: .bottomTrailing) {
+            if appState.showTrackingDebug {
+                TrackingDebugView(store: appState.debugStore)
+                    .frame(width: 520, height: 440)
+                    .background(Color(white: 0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange, lineWidth: 2))
+                    .cornerRadius(8)
+                    .padding(16)
+            }
+        }
     }
 }
 

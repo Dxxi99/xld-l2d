@@ -14,6 +14,17 @@ struct CanvasPanel: View {
                 MetalRigView(model: m,
                              yawDeg: appState.yawDeg,
                              pitchDeg: appState.pitchDeg,
+                             eyeOpen_L: appState.eyeOpen_L,
+                             eyeOpen_R: appState.eyeOpen_R,
+                             mouthOpen: appState.mouthOpen,
+                             eyeL_X: appState.eyeL_regionX,
+                             eyeL_Y: appState.eyeL_regionY,
+                             eyeR_X: appState.eyeR_regionX,
+                             eyeR_Y: appState.eyeR_regionY,
+                             mouth_X: appState.mouth_regionX,
+                             mouth_Y: appState.mouth_regionY,
+                             eyeR_N: appState.eye_radiusN,
+                             mouthR_N: appState.mouth_radiusN,
                              sourceImageURL: m.sourceImageURL,
                              onFPS: { f in
                                  DispatchQueue.main.async { appState.fps = f }

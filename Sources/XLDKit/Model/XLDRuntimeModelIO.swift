@@ -17,6 +17,17 @@ public enum XLDRuntimeModelIO {
         public let autoLowerYEnd: Float
         public let autoFaceRotScale: Float
         public let autoTuneR: Float
+
+        // anime-face-detector 자동 추출 (모든 캐릭터 공통)
+        public let regionEyeLX: Float
+        public let regionEyeLY: Float
+        public let regionEyeRX: Float
+        public let regionEyeRY: Float
+        public let regionMouthX: Float
+        public let regionMouthY: Float
+        public let regionEyeRadius: Float
+        public let regionMouthRadius: Float
+        public let hasRegionAuto: Bool  // region_* 파싱 성공 여부
     }
 
     public static func readMeta(directory: URL) throws -> Meta {
@@ -34,6 +45,17 @@ public enum XLDRuntimeModelIO {
         var autoLowerYEnd: Float = 0.95
         var autoFaceRotScale: Float = 0.55
         var autoTuneR: Float = 1.8
+
+        var regionEyeLX: Float = 0.38
+        var regionEyeLY: Float = 0.22
+        var regionEyeRX: Float = 0.62
+        var regionEyeRY: Float = 0.22
+        var regionMouthX: Float = 0.50
+        var regionMouthY: Float = 0.30
+        var regionEyeRadius: Float = 0.06
+        var regionMouthRadius: Float = 0.08
+        var hasRegionAuto = false
+
         for line in text.split(separator: "\n") {
             let p = line.split(separator: " ")
             guard p.count >= 2 else { continue }
@@ -49,6 +71,14 @@ public enum XLDRuntimeModelIO {
             case "auto_lower_y_end":   autoLowerYEnd = Float(p[1]) ?? autoLowerYEnd
             case "auto_face_rot_scale": autoFaceRotScale = Float(p[1]) ?? autoFaceRotScale
             case "auto_tune_r":        autoTuneR = Float(p[1]) ?? autoTuneR
+            case "region_eye_l_x": regionEyeLX = Float(p[1]) ?? regionEyeLX; hasRegionAuto = true
+            case "region_eye_l_y": regionEyeLY = Float(p[1]) ?? regionEyeLY
+            case "region_eye_r_x": regionEyeRX = Float(p[1]) ?? regionEyeRX
+            case "region_eye_r_y": regionEyeRY = Float(p[1]) ?? regionEyeRY
+            case "region_mouth_x": regionMouthX = Float(p[1]) ?? regionMouthX
+            case "region_mouth_y": regionMouthY = Float(p[1]) ?? regionMouthY
+            case "region_eye_radius": regionEyeRadius = Float(p[1]) ?? regionEyeRadius
+            case "region_mouth_radius": regionMouthRadius = Float(p[1]) ?? regionMouthRadius
             case "H":   H   = Int(p[1]) ?? H
             case "W":   W   = Int(p[1]) ?? W
             default: break
@@ -58,7 +88,12 @@ public enum XLDRuntimeModelIO {
                     autoFacePivotY: autoFacePivotY, autoHeadZLo: autoHeadZLo,
                     autoHeadZHi: autoHeadZHi, autoLowerYStart: autoLowerYStart,
                     autoLowerYEnd: autoLowerYEnd, autoFaceRotScale: autoFaceRotScale,
-                    autoTuneR: autoTuneR)
+                    autoTuneR: autoTuneR,
+                    regionEyeLX: regionEyeLX, regionEyeLY: regionEyeLY,
+                    regionEyeRX: regionEyeRX, regionEyeRY: regionEyeRY,
+                    regionMouthX: regionMouthX, regionMouthY: regionMouthY,
+                    regionEyeRadius: regionEyeRadius, regionMouthRadius: regionMouthRadius,
+                    hasRegionAuto: hasRegionAuto)
     }
 
     public static func loadMesh(directory: URL, meta: Meta) throws -> XLDMesh {
