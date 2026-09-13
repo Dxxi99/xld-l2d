@@ -10,9 +10,11 @@ Arguments:
     work_dir         중간 산출물 (기본: <out_model_dir>_work)
 
 Pipeline:
-    [1] test_depth.py              -> depth.png
-    [2] tj_normalized.py           -> tj_normalized_accept.npz
-    [3] layer_promotion_v2.py      -> layers_v2/, swift_cache/ (layer_id, cons, seg)
+    [0-A] upscale_anime.py         -> upscaled.png (4x, Real-ESRGAN anime)
+    [0-B] segment_toonout.py       -> char_mask.png (ToonOut)
+    [1] test_depth.py              -> depth.png (on upscaled)
+    [2] tj_normalized.py           -> tj_normalized_accept.npz (on upscaled)
+    [3] layer_promotion_v2.py      -> layers_v2/, swift_cache/ (char_mask 재사용)
     [4] mesh_rig_v3.py             -> rig_v3.npz
     [5] mesh_rig_v8.py             -> rig_v8_sig120_R100.npz
     [6] mesh_rig_v12.py            -> rig_v12_flipfree.npz
@@ -58,6 +60,8 @@ def run(label, cmd):
     print()
 
 # paths
+UPSCALED_PNG = WORK / "upscaled.png"
+CHAR_MASK    = WORK / "char_mask.png"
 DEPTH_PNG   = WORK / "depth.png"
 TJ_DIR      = WORK / "tj_normalized"
 TJ_NPZ      = TJ_DIR / "tj_normalized_accept.npz"
@@ -69,23 +73,36 @@ RIG_V3      = WORK / "rig_v3.npz"
 RIG_V8      = WORK / "rig_v8_sig120_R100.npz"
 RIG_V12     = WORK / "rig_v12_flipfree.npz"
 
-# 1) depth
+# 0-A) upscale (Real-ESRGAN anime, 4x)
+run("upscale (Real-ESRGAN anime)", [
+    str(SCRIPT_DIR / "upscale_anime.py"),
+    str(INPUT), str(UPSCALED_PNG)
+])
+
+# 0-B) segmentation (ToonOut, BiRefNet anime)
+run("segment (ToonOut)", [
+    str(SCRIPT_DIR / "segment_toonout.py"),
+    str(UPSCALED_PNG), str(CHAR_MASK)
+])
+
+# 1) depth (on upscaled image)
 run("depth inference", [
     str(SCRIPT_DIR / "test_depth.py"),
-    str(INPUT), str(DEPTH_PNG)
+    str(UPSCALED_PNG), str(DEPTH_PNG)
 ])
 
-# 2) T-junction
+# 2) T-junction (on upscaled image)
 run("T-junction detection", [
     str(SCRIPT_DIR / "tj_normalized.py"),
-    str(INPUT), str(TJ_DIR)
+    str(UPSCALED_PNG), str(TJ_DIR)
 ])
 
-# 3) layer promotion (fusion + cache)
+# 3) layer promotion (fusion + cache) — char_mask 재사용
 run("layer promotion + fusion", [
     str(SCRIPT_DIR / "layer_promotion_v2.py"),
-    str(INPUT), str(DEPTH_PNG), str(TJ_NPZ),
-    str(LAYERS_DIR), str(SWIFT_DIR)
+    str(UPSCALED_PNG), str(DEPTH_PNG), str(TJ_NPZ),
+    str(LAYERS_DIR), str(SWIFT_DIR),
+    str(CHAR_MASK)
 ])
 
 # 4) rig v3
@@ -110,7 +127,14 @@ run("rig v12 (flip-free)", [
 # 7) cache for Swift (final model dir)
 run("cache for Swift (model dir)", [
     str(SCRIPT_DIR / "cache_model_for_swift.py"),
-    str(RIG_V12), str(INPUT), str(OUT_MODEL)
+    str(RIG_V12), str(UPSCALED_PNG), str(OUT_MODEL), str(SWIFT_DIR),
+    str(DEPTH_PNG)
+])
+
+# 8) copy downsampled depth for 2.5D shader
+run("copy depth (2.5D)", [
+    str(SCRIPT_DIR / "copy_depth_for_2p5d.py"),
+    str(DEPTH_PNG), str(OUT_MODEL)
 ])
 
 print("=" * 70)

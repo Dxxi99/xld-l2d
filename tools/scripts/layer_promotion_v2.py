@@ -23,6 +23,7 @@ DEPTH_ARG = sys.argv[2] if len(sys.argv) > 2 else None
 TJ_ARG    = sys.argv[3] if len(sys.argv) > 3 else None
 LAYERS_ARG= sys.argv[4] if len(sys.argv) > 4 else None
 CACHE_ARG = sys.argv[5] if len(sys.argv) > 5 else None
+CHAR_MASK_ARG = sys.argv[6] if len(sys.argv) > 6 else None
 
 IMG_PATH   = Path(IMG_ARG).expanduser()   if IMG_ARG   else (Path.home()/"XLD-L2D/assets/real/my_vtuber.png")
 DEPTH_PATH = Path(DEPTH_ARG).expanduser() if DEPTH_ARG else (Path.home()/"XLD-L2D/assets/real/depth_anything_v2.png")
@@ -51,15 +52,46 @@ d = transform.resize(d.astype(np.float32),(H,W),anti_aliasing=True,
                      preserve_range=True) if d.shape!=(H,W) else d.astype(np.float32)
 print(f"[img] H={H} W={W}")
 
-# ---- char mask (border-connected light = bg) ----
-border = np.concatenate([img[0,:],img[-1,:],img[:,0],img[:,-1]],0)
-if border.ndim>1:
-    bg=np.median(border,0); diff=np.linalg.norm(img.astype(np.float32)-bg,axis=-1)
-else:
-    bg=np.median(border); diff=np.abs(img.astype(np.float32)-bg)
-similar=diff<40; lbl,_=ndimage.label(similar)
-bl=np.concatenate([lbl[0,:],lbl[-1,:],lbl[:,0],lbl[:,-1]]); bl=bl[bl>0]
-cm = ~(lbl == np.bincount(bl).argmax())
+# ---- char mask ----
+# 우선순위: --char-mask 인자 (ToonOut) > fallback (border flood fill)
+cm = None
+if CHAR_MASK_ARG is not None:
+    cm_path = Path(CHAR_MASK_ARG)
+    if not cm_path.is_absolute():
+        cm_path = Path.cwd() / cm_path
+    if cm_path.exists():
+        from PIL import Image as _PILImage
+        cm_img = _PILImage.open(str(cm_path)).convert("L")
+        cm_np = np.array(cm_img, dtype=np.float32) / 255.0
+        if cm_np.shape != (H, W):
+            cm_np = transform.resize(cm_np, (H, W), anti_aliasing=True, preserve_range=True)
+        # 임계값 0.5 (이진), 안티앨리어싱 유지
+        cm = (cm_np > 0.5)
+        print(f"[char_mask] loaded from {cm_path.name}  ratio={cm.mean():.3f}")
+    else:
+        print(f"[char_mask] NOT FOUND: {cm_path}  → fallback")
+
+if cm is None:
+    # fallback: border-connected white flood fill
+    print("[char_mask] using fallback (border flood fill)")
+    rgb_i = img[...,:3].astype(np.int32) if img.ndim == 3 else img.astype(np.int32)[...,None].repeat(3, axis=-1)
+    white = (rgb_i[...,0] >= 245) & (rgb_i[...,1] >= 245) & (rgb_i[...,2] >= 245)
+    white = ndimage.binary_closing(white, iterations=2)
+    lbl, _ = ndimage.label(white)
+    bl = np.concatenate([lbl[0,:], lbl[-1,:], lbl[:,0], lbl[:,-1]])
+    bl = bl[bl > 0]
+    if len(bl) > 0:
+        bg_label = np.bincount(bl).argmax()
+        bg = (lbl == bg_label)
+    else:
+        bg = white
+    cm = ~bg
+    cm = ndimage.binary_closing(cm, iterations=3)
+    cm = ndimage.binary_opening(cm, iterations=2)
+    cm = ndimage.binary_fill_holes(cm)
+    cm = ndimage.binary_closing(cm, iterations=3)
+    cm = ndimage.binary_opening(cm, iterations=1)
+    cm = ndimage.binary_fill_holes(cm)
 
 # ---- region-based depth buckets ----
 dd=np.where(cm,d,np.nan)

@@ -71,15 +71,18 @@ final class RigRenderer: NSObject, MTKViewDelegate {
         let W = Float(model.width)
         let H = Float(model.height)
 
-        var vertexData = [Float](repeating: 0, count: verts.count * 6)
+        let vz = model.vertexZ
+        var vertexData = [Float](repeating: 0, count: verts.count * 8)
         for i in 0..<verts.count {
             let v = verts[i]
-            vertexData[i*6 + 0] = v.x
-            vertexData[i*6 + 1] = v.y
-            vertexData[i*6 + 2] = bx[i]
-            vertexData[i*6 + 3] = by[i]
-            vertexData[i*6 + 4] = v.x / W
-            vertexData[i*6 + 5] = v.y / H
+            vertexData[i*8 + 0] = v.x
+            vertexData[i*8 + 1] = v.y
+            vertexData[i*8 + 2] = bx[i]
+            vertexData[i*8 + 3] = by[i]
+            vertexData[i*8 + 4] = v.x / W
+            vertexData[i*8 + 5] = v.y / H
+            vertexData[i*8 + 6] = vz[i]
+            vertexData[i*8 + 7] = 0
         }
         vertexBuffer = device.makeBuffer(bytes: vertexData,
                                          length: vertexData.count * MemoryLayout<Float>.size,
@@ -138,8 +141,12 @@ final class RigRenderer: NSObject, MTKViewDelegate {
         else { return }
 
         // uniforms
-        let sx = sin(yawDeg * .pi / 180) * model.rig.rX
-        let sy = sin(pitchDeg * .pi / 180) * model.rig.rY
+        // 튜닝: rX/rY를 스케일 보정 + 배율
+        let sclX = Float(model.width) / 1856.0
+        let sclY = Float(model.height) / 2640.0
+        let tuneR = model.meta.autoTuneR
+        let sx = sin(yawDeg * .pi / 180) * model.rig.rX * sclX * tuneR
+        let sy = sin(pitchDeg * .pi / 180) * model.rig.rY * sclY * tuneR
 
         struct Uniforms {
             var viewport: SIMD2<Float>
@@ -147,15 +154,41 @@ final class RigRenderer: NSObject, MTKViewDelegate {
             var offset: SIMD2<Float>
             var scale: Float
             var pad: Float
+            var headWeightBase: Float
+            var headZLo: Float
+            var headZHi: Float
+            var lowerYStart: Float
+            var lowerYEnd: Float
+            var lowerFade: Float
+            var yawRad: Float
+            var pitchRad: Float
+            var facePivotY: Float
+            var faceRotScale: Float
+            var facePersp: Float
+            var reserved3: Float
         }
         let W = Float(model.width), H = Float(model.height)
         let vp = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
         let scale = min(vp.x / W, vp.y / H)
+        let yawRad = yawDeg * .pi / 180
+        let pitchRad = pitchDeg * .pi / 180
         var u = Uniforms(viewport: vp,
                          imageSize: SIMD2(W, H),
                          offset: SIMD2(sx, sy),
                          scale: scale,
-                         pad: 0)
+                         pad: 0,
+                         headWeightBase: 0.35,
+                         headZLo: model.meta.autoHeadZLo,
+                         headZHi: model.meta.autoHeadZHi,
+                         lowerYStart: model.meta.autoLowerYStart,
+                         lowerYEnd: model.meta.autoLowerYEnd,
+                         lowerFade: 0.90,
+                         yawRad: yawRad,
+                         pitchRad: pitchRad,
+                         facePivotY: model.meta.autoFacePivotY,
+                         faceRotScale: model.meta.autoFaceRotScale,
+                         facePersp: 0.04,
+                         reserved3: 0)
 
         enc.setRenderPipelineState(pipeline)
         enc.setVertexBuffer(vb, offset: 0, index: 0)

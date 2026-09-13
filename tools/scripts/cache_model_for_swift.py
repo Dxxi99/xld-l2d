@@ -21,6 +21,8 @@ from scipy import ndimage
 SRC_ARG = sys.argv[1] if len(sys.argv) > 1 else None
 IMG_ARG = sys.argv[2] if len(sys.argv) > 2 else None
 DST_ARG = sys.argv[3] if len(sys.argv) > 3 else None
+SWIFT_ARG = sys.argv[4] if len(sys.argv) > 4 else None
+DEPTH_ARG = sys.argv[5] if len(sys.argv) > 5 else None
 
 SRC = Path(SRC_ARG).expanduser() if SRC_ARG else (
     Path.home() / "XLD-L2D/assets/real/mesh/rig_v12_flipfree.npz")
@@ -28,6 +30,9 @@ IMG = Path(IMG_ARG).expanduser() if IMG_ARG else (
     Path.home() / "XLD-L2D/assets/real/my_vtuber.png")
 DST = Path(DST_ARG).expanduser() if DST_ARG else (
     Path.home() / "XLD-L2D/assets/real/swift_cache/model_v1")
+SWIFT_DIR = Path(SWIFT_ARG).expanduser() if SWIFT_ARG else None
+
+DEPTH = Path(DEPTH_ARG).expanduser() if DEPTH_ARG else None
 
 if not SRC.exists(): print(f"[error] npz: {SRC}"); sys.exit(1)
 if not IMG.exists(): print(f"[error] img: {IMG}"); sys.exit(1)
@@ -56,31 +61,61 @@ tris.astype(np.int32).tofile(DST / "triangles.bin")
 bx.tofile(DST / "basis_x.bin")
 by.tofile(DST / "basis_y.bin")
 
+# ---- vertex별 depth(z) 샘플링 (2.5D) ----
+if DEPTH is not None and DEPTH.exists():
+    dimg = Image.open(DEPTH).convert("L")
+    if dimg.size != (W, H):
+        dimg = dimg.resize((W, H), Image.LANCZOS)
+    darr = np.array(dimg, dtype=np.float32) / 255.0  # 0..1
+    # vertex 좌표 (xs, ys) → depth 샘플 (정수 반올림, clip)
+    xi = np.clip(np.round(xs).astype(np.int32), 0, W - 1)
+    yi = np.clip(np.round(ys).astype(np.int32), 0, H - 1)
+    vz = darr[yi, xi].astype(np.float32)
+    vz.tofile(DST / "vertices_z.bin")
+    print(f"[depth] vertices_z.bin  min={vz.min():.3f} max={vz.max():.3f} mean={vz.mean():.3f}")
+else:
+    print(f"[depth] skipped (no depth arg or not found)")
+
+
 # ---- layer_id per vertex (optional) ----
 if 'v_layer' in d.files:
     v_layer = d['v_layer'].astype(np.uint8)
     v_layer.tofile(DST / "layer_id.bin")
     print(f"[layer] unique={np.unique(v_layer).tolist()}")
 
-# ---- source image + white bg flood fill → alpha=0 ----
+# ---- source image + alpha from char_mask (preferred) or flood fill ----
 img = Image.open(IMG).convert("RGBA")
 if img.size != (W, H):
     img = img.resize((W, H), Image.LANCZOS)
 
 a = np.array(img).copy()
-rgb = a[:,:,:3].astype(np.int32)
-white = (rgb[:,:,0] > 235) & (rgb[:,:,1] > 235) & (rgb[:,:,2] > 235)
-lbl, n = ndimage.label(white)
-border_labels = set()
-border_labels.update(np.unique(lbl[0, :]).tolist())
-border_labels.update(np.unique(lbl[-1, :]).tolist())
-border_labels.update(np.unique(lbl[:, 0]).tolist())
-border_labels.update(np.unique(lbl[:, -1]).tolist())
-border_labels.discard(0)
-bg = np.isin(lbl, list(border_labels))
-a[:,:,3] = np.where(bg, 0, 255).astype(np.uint8)
+used = False
+if SWIFT_DIR is not None:
+    cm_path = SWIFT_DIR / "char_mask.bin"
+    if cm_path.exists():
+        cm = np.fromfile(cm_path, dtype=np.uint8)
+        if cm.size == H * W:
+            cm = cm.reshape(H, W)
+            a[:,:,3] = (cm * 255).astype(np.uint8)
+            used = True
+            print(f"[img] char_mask: char_px={int(cm.sum())} ({100*cm.mean():.1f}%)")
+
+if not used:
+    rgb = a[:,:,:3].astype(np.int32)
+    white = (rgb[:,:,0] > 235) & (rgb[:,:,1] > 235) & (rgb[:,:,2] > 235)
+    lbl, n = ndimage.label(white)
+    border_labels = set()
+    border_labels.update(np.unique(lbl[0, :]).tolist())
+    border_labels.update(np.unique(lbl[-1, :]).tolist())
+    border_labels.update(np.unique(lbl[:, 0]).tolist())
+    border_labels.update(np.unique(lbl[:, -1]).tolist())
+    border_labels.discard(0)
+    bg = np.isin(lbl, list(border_labels))
+    a[:,:,3] = np.where(bg, 0, 255).astype(np.uint8)
+    print(f"[img] flood fill fallback: bg_removed={int(bg.sum())} px")
+
 Image.fromarray(a, "RGBA").save(DST / "source.png")
-print(f"[img] source.png {img.size}  bg_removed={int(bg.sum())} px ({100*bg.mean():.1f}%)")
+print(f"[img] source.png {img.size}")
 
 # ---- meta ----
 with open(DST / "meta.txt", "w") as f:
