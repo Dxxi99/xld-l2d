@@ -15,7 +15,16 @@ let package = Package(
         .executableTarget(
             name: "XLDApp",
             dependencies: ["XLDKit"],
-            path: "Sources/XLDApp"
+            path: "Sources/XLDApp",
+            exclude: ["Resources/Info.plist"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/XLDApp/Resources/Info.plist"
+                ])
+            ]
         ),
         .testTarget(name: "XLDKitTests", dependencies: ["XLDKit"], path: "Tests/XLDKitTests"),
     ]

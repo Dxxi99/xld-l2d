@@ -144,7 +144,7 @@ final class RigRenderer: NSObject, MTKViewDelegate {
         // 튜닝: rX/rY를 스케일 보정 + 배율
         let sclX = Float(model.width) / 1856.0
         let sclY = Float(model.height) / 2640.0
-        let tuneR = model.meta.autoTuneR
+        let tuneR = model.meta.autoTuneR * 1.3  // 1.8→~2.3
         let sx = sin(yawDeg * .pi / 180) * model.rig.rX * sclX * tuneR
         let sy = sin(pitchDeg * .pi / 180) * model.rig.rY * sclY * tuneR
 
@@ -177,7 +177,7 @@ final class RigRenderer: NSObject, MTKViewDelegate {
                          offset: SIMD2(sx, sy),
                          scale: scale,
                          pad: 0,
-                         headWeightBase: 0.35,
+                         headWeightBase: 0.45,
                          headZLo: model.meta.autoHeadZLo,
                          headZHi: model.meta.autoHeadZHi,
                          lowerYStart: model.meta.autoLowerYStart,
@@ -187,7 +187,7 @@ final class RigRenderer: NSObject, MTKViewDelegate {
                          pitchRad: pitchRad,
                          facePivotY: model.meta.autoFacePivotY,
                          faceRotScale: model.meta.autoFaceRotScale,
-                         facePersp: 0.04,
+                         facePersp: 0.07,
                          reserved3: 0)
 
         enc.setRenderPipelineState(pipeline)

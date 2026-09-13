@@ -12,6 +12,13 @@ final class AppState: ObservableObject {
     @Published var yawDeg: Double = 0
     @Published var pitchDeg: Double = 0
 
+    // Tracking
+    @Published var trackingEnabled: Bool = false
+    @Published var trackingFPS: Int = 60
+    @Published var faceDetected: Bool = false
+    @Published var cameraFPS: Double = 0
+    let cameraTracker = CameraTracker()
+
     // Status
     @Published var statusMessage: String = "Ready"
     @Published var fps: Double = 0
@@ -40,6 +47,33 @@ final class AppState: ObservableObject {
     }
 
     func resetPose() { yawDeg = 0; pitchDeg = 0 }
+
+    func toggleTracking() {
+        if trackingEnabled {
+            cameraTracker.stop()
+            trackingEnabled = false
+            faceDetected = false
+            cameraFPS = 0
+        } else {
+            cameraTracker.onAngles = { [weak self] yaw, pitch, _ in
+                guard let self else { return }
+                // 거울 모드 + 증폭
+                // 거울이 반대로 느껴지면 yawAmp 부호를 -1.6으로
+                let yawAmp: Double = 1.4
+                let pitchAmp: Double = 1.4
+                let y = -yaw * yawAmp       // 거울 (오른쪽→오른쪽)
+                let p = pitch * pitchAmp    // ★ 부호 뒤집음 (아래→아래)
+                self.yawDeg = max(-60, min(60, y))
+                self.pitchDeg = max(-45, min(45, p))
+            }
+            cameraTracker.onStatus = { [weak self] detected, fps in
+                self?.faceDetected = detected
+                self?.cameraFPS = fps
+            }
+            cameraTracker.start(targetFPS: trackingFPS)
+            trackingEnabled = true
+        }
+    }
 
     func openImage(_ url: URL) {
         guard !isProcessing else { return }

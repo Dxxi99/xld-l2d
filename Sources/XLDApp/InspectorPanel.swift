@@ -66,11 +66,11 @@ struct PropertiesTab: View {
 
                     SliderRow(label: "Yaw",
                               value: $appState.yawDeg,
-                              range: -30...30,
+                              range: -60...60,
                               format: "%+.1f°")
                     SliderRow(label: "Pitch",
                               value: $appState.pitchDeg,
-                              range: -15...15,
+                              range: -45...45,
                               format: "%+.1f°")
 
                     Button("Reset") { appState.resetPose() }
@@ -78,6 +78,64 @@ struct PropertiesTab: View {
                         .font(.system(size: 11))
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color(white: 0.22)))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            }
+            .groupBoxStyle(InspectorGroupBox())
+
+            // Face Tracking
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Face Tracking")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+
+                    Toggle(isOn: Binding(
+                        get: { appState.trackingEnabled },
+                        set: { newVal in
+    print("[Inspector] toggle set -> \(newVal)")
+    appState.toggleTracking()
+}
+                    )) {
+                        Text("Enable").font(.system(size: 11))
+                    }
+                    .toggleStyle(.switch)
+                    .tint(.cyan)
+
+                    HStack {
+                        Text("Camera FPS").font(.system(size: 11)).foregroundColor(.white.opacity(0.7))
+                        Spacer()
+                        Picker("", selection: $appState.trackingFPS) {
+                            Text("30").tag(30)
+                            Text("60").tag(60)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 90)
+                        .disabled(appState.trackingEnabled)
+                    }
+
+                    if appState.trackingEnabled {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(appState.faceDetected ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(appState.faceDetected ? "Face OK" : "No face")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.7))
+                            Spacer()
+                            Text(String(format: "%.0f fps", appState.cameraFPS))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.green.opacity(0.85))
+                        }
+                    }
+
+                    if let err = appState.cameraTracker.errorMessage {
+                        Text(err)
+                            .font(.system(size: 9))
+                            .foregroundColor(.red.opacity(0.9))
+                            .lineLimit(2)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
